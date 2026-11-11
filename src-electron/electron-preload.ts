@@ -4,6 +4,7 @@ import type { IpcRendererEvent } from 'electron';
 contextBridge.exposeInMainWorld('api', {
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   setSettings: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
+  listOllamaModels: () => ipcRenderer.invoke('models:ollama'),
   loadTickets: () => ipcRenderer.invoke('tickets:load'),
   chooseTicketsFile: () => ipcRenderer.invoke('tickets:choose'),
   onTicketsChanged: (listener: (data: unknown) => void) => {
@@ -36,6 +37,7 @@ contextBridge.exposeInMainWorld('api', {
   applySplit: (featId: string, proposal: unknown) => ipcRenderer.invoke('feat:applySplit', featId, proposal),
   loadProject: () => ipcRenderer.invoke('project:load'),
   chooseWorkspace: () => ipcRenderer.invoke('project:choose'),
+  setWorkspace: (root: string) => ipcRenderer.invoke('project:set', root),
   resolveInboxItem: (relPath: string, result?: string) => ipcRenderer.invoke('inbox:resolve', relPath, result),
   importDriveDoc: (url: string) => ipcRenderer.invoke('inbox:import', url),
   saveEntity: (kind: string, relPath: string | null, fields: Record<string, unknown>, body?: string) => ipcRenderer.invoke('entity:save', kind, relPath, fields, body),

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useProject } from '../composables/useProject';
+import { LOCAL_MODELS } from '../shared/entities';
 
 defineEmits<{ (e: 'open', id: string): void }>();
 const { data, patchFile } = useProject();
@@ -11,7 +12,7 @@ const settings = computed(() => data.value?.archSettings);
 const workflows = computed(() => data.value?.workflows ?? []);
 const CONFIRM = [['always', 'Toujours'], ['under', 'Sous 80 % de confiance'], ['never', 'Jamais']] as const;
 const NOMATCH = [['plan', 'Plan libre'], ['free', 'Agent libre'], ['ask', 'Me demander']] as const;
-const LOCAL = ['qwen2.5-coder:14b', 'llama3.1:8b', 'mistral:7b'];
+const LOCAL = LOCAL_MODELS;
 
 const current = computed(() => settings.value?.samples[sample.value] ?? null);
 const color = (c: number) => (c >= 90 ? '#4ade80' : c >= 75 ? '#fbbf24' : '#fca5a5');

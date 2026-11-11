@@ -10,7 +10,7 @@ import ArchVersions from '../components/ArchVersions.vue';
 import { useProject } from '../composables/useProject';
 import EntityDialog from '../components/EntityDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import { NODE_FIELDS } from '../shared/entities';
+import { NODE_FIELDS, LOCAL_MODELS } from '../shared/entities';
 import type { ArchEdgeKind, ArchNode, LibraryNode, WorkflowDef } from '../shared/types';
 
 const { data, saveInstruction, saveEntity, deleteEntity, workflowOp } = useProject();
@@ -90,7 +90,7 @@ const TABS = [
 const TYPE_LABEL = { agent: 'Agent', script: 'Script', human: 'Toi', alert: 'Alerte' };
 const TYPE_CLS = { agent: 'ok', script: 'blue', human: 'hint', alert: 'fail' };
 const PURPOSES = ['Général', 'Sécurité', 'Migration', 'Simple', 'Docs', 'Tests', 'Revue'];
-const LOCAL = ['qwen2.5-coder:14b', 'llama3.1:8b', 'mistral:7b'];
+const LOCAL = LOCAL_MODELS;
 
 const tab = ref('graph');
 const wfId = ref('');

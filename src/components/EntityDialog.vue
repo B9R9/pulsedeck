@@ -15,7 +15,7 @@
             <div v-for="f in s.fields" :key="f.key" class="field" :class="{ half: f.half }">
               <q-toggle v-if="f.type === 'bool'" v-model="form[f.key] as boolean" :label="f.label" color="green" dark />
               <q-select
-                v-else-if="f.type === 'enum'" v-model="form[f.key] as string" :options="f.options" :label="label(f)"
+                v-else-if="f.type === 'enum'" v-model="form[f.key] as string" :options="enumOptions(f)" :label="label(f)"
                 emit-value map-options outlined dark dense options-dense :hint="f.hint" popup-content-class="dlg-menu"
               />
               <q-select
@@ -69,9 +69,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { ENTITIES, scriptCommand } from '../shared/entities';
-import type { EntityKind, FieldDef } from '../shared/entities';
+import type { EntityKind, FieldDef, Opt } from '../shared/entities';
+import type { LocalModel } from '../shared/types';
 import { useProject } from '../composables/useProject';
 import { useTickets } from '../composables/useTickets';
 import AiSuggest from './AiSuggest.vue';
@@ -99,6 +100,8 @@ const allFields = computed(() => (props.fieldDefs ?? def.value.fields).filter((f
 const heading = computed(() => props.titleText ?? (props.path ? 'Modifier : ' : 'Nouveau : ') + def.value.label.toLowerCase());
 
 const form = ref<Record<string, unknown>>({});
+/** Modèles locaux utilisables (marqués actifs dans les options), relevés auprès d'Ollama. */
+const ollama = ref<LocalModel[]>([]);
 const text = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -149,6 +152,16 @@ function contextFor(key: string): Record<string, string> {
 }
 
 const label = (f: FieldDef) => f.label + (f.required ? ' *' : '');
+
+/** Les choix d'un champ enum : la liste du champ enrichie des modèles locaux utilisés (nom affiché choisi dans les options). */
+function enumOptions(f: FieldDef): Opt[] {
+  if (f.key !== 'model' && f.key !== 'fallback') return f.options ?? [];
+  const base = f.options ?? [];
+  if (f.key === 'model' && !f.onlyFor?.length) return base; // nœud non agent : aucun modèle
+  const known = new Set(base.map((o) => o.value));
+  return [...base, ...ollama.value.filter((m) => !known.has(m.id)).map((m) => ({ value: m.id, label: m.label + ' (local)' }))];
+}
+
 const idDef = computed(() => allFields.value.find((f) => f.key === 'id'));
 const autoId = computed(() => !!idDef.value && !props.path && !idTouched.value);
 
@@ -227,6 +240,10 @@ async function submit() {
     busy.value = false;
   }
 }
+
+onMounted(async () => {
+  try { ollama.value = await window.api.listOllamaModels(); } catch { ollama.value = []; }
+});
 </script>
 
 <style scoped lang="scss">

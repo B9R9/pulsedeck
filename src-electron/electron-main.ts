@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { answerAsk, setDefaultModel, startRun, stopRun } from './claude-runner';
 import { setApprovalProvider, emptyProject, loadProject, patchFile, saveInstruction } from './project-store';
+import { resolveModel } from './models';
+import { mergeLocalModels, ollamaModels, sanitizeLocalModels, usableLocalModels } from './ollama';
 import { createTicket, deleteLocalTicket, loadTickets, resolveTicketsFile, resetTicket, saveTicket, setTicketLinks, watchTickets } from './tickets';
 import { suggestText } from './suggest';
 import { refreshStats } from './stats';
@@ -22,8 +24,10 @@ let mainWindow: BrowserWindow | undefined;
 
 const configFile = () => path.join(app.getPath('userData'), 'workspace.json');
 
-interface Config { root?: string; ticketsFile?: string; model?: string }
-const MODELS = ['', 'sonnet', 'opus', 'haiku'];
+interface Config { root?: string; ticketsFile?: string; model?: string; modelProjets?: string; modelDocs?: string; projects?: string[]; localModels?: unknown }
+/** Valeurs libres : '', un alias court (sonnet...) et tout modèle local d'Ollama (contient un deux-points). */
+const validModel = (v: unknown): v is string => typeof v === 'string' && (v === '' || /^[a-z]{3,6}$/.test(v) || v.includes(':')) && v.length <= 100;
+const MAX_PROJECTS = 8;
 
 function readConfig(): Config {
   try {
@@ -36,16 +40,26 @@ function writeConfig(patch: Config) {
   fs.writeFileSync(configFile(), JSON.stringify({ ...readConfig(), ...patch }));
 }
 
-function settings() {
+/** Ajoute un dossier à la liste des projets connus, en première position. */
+function registerProject(root: string) {
+  const past = (readConfig().projects ?? []).filter((p) => p !== root);
+  writeConfig({ projects: [root, ...past].slice(0, MAX_PROJECTS) });
+}
+
+async function settings() {
   const cfg = readConfig();
   const root = readRoot() ?? '';
   const found = resolveTicketsFile(root, cfg.ticketsFile);
   return {
     root,
+    projects: [root, ...(cfg.projects ?? [])].filter((p, i, a) => p !== '' && a.indexOf(p) === i),
     ticketsChosen: cfg.ticketsFile ?? '',
     ticketsFile: found?.file ?? '',
     ticketsOrigin: found?.origin ?? 'aucun',
     model: cfg.model ?? '',
+    modelProjets: cfg.modelProjets ?? '',
+    modelDocs: cfg.modelDocs ?? '',
+    localModels: mergeLocalModels(sanitizeLocalModels(cfg.localModels), await ollamaModels()),
     dataDir: app.getPath('userData'),
     version: app.getVersion()
   };
@@ -61,6 +75,13 @@ function readTickets() {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tickets:changed', loadTickets(root, readConfig().ticketsFile));
       })
     : undefined;
+  return data;
+}
+
+/** Recharge les tickets (fichier du projet en cours) et pousse le résultat à l'interface. */
+function pushTickets() {
+  const data = readTickets();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tickets:changed', data);
   return data;
 }
 
@@ -88,16 +109,39 @@ function registerIpc() {
       properties: ['openDirectory', 'createDirectory']
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    writeConfig({ root: result.filePaths[0] });
-    return loadProject(result.filePaths[0]);
+    const root = result.filePaths[0];
+    writeConfig({ root });
+    registerProject(root);
+    pushTickets();
+    return loadProject(root);
+  });
+
+  /** Change le projet de travail vers un dossier déjà connu, sans boîte de dialogue. */
+  ipcMain.handle('project:set', (_e, next: string) => {
+    const root = String(next ?? '');
+    if (!root || !fs.existsSync(root)) throw new Error('Dossier de projet introuvable : ' + root);
+    writeConfig({ root });
+    registerProject(root);
+    pushTickets();
+    return loadProject(root);
   });
 
   ipcMain.handle('settings:load', () => settings());
-  ipcMain.handle('settings:set', (_e, patch: { model?: string; ticketsFile?: string }) => {
-    if (typeof patch?.model === 'string' && MODELS.includes(patch.model)) {
-      writeConfig({ model: patch.model });
-      setDefaultModel(patch.model);
-    }
+
+  /** Modèles locaux utilisables (actifs) avec leur nom affiché : sert aux listes de modèles hors Options. */
+  ipcMain.handle('models:ollama', async () => usableLocalModels(sanitizeLocalModels(readConfig().localModels)));
+  ipcMain.handle('settings:set', async (_e, patch: { model?: string; modelProjets?: string; modelDocs?: string; ticketsFile?: string; localModels?: unknown }) => {
+    const enabled = (await usableLocalModels(sanitizeLocalModels(readConfig().localModels))).map((m) => m.id);
+    const modelOk = (v: unknown): v is string =>
+      typeof v === 'string' && (v === '' || /^[a-z]{3,6}$/.test(v) || enabled.includes(v)) && v.length <= 200;
+    const model = modelOk(patch?.model) ? patch.model : undefined;
+    if (model !== undefined) { writeConfig({ model }); setDefaultModel(resolveModel(model) ?? model); }
+    const modelProjets = modelOk(patch?.modelProjets) ? patch.modelProjets : undefined;
+    if (modelProjets !== undefined) writeConfig({ modelProjets });
+    const modelDocs = modelOk(patch?.modelDocs) ? patch.modelDocs : undefined;
+    if (modelDocs !== undefined) writeConfig({ modelDocs });
+    const localModels = sanitizeLocalModels(patch?.localModels);
+    if (patch?.localModels !== undefined) writeConfig({ localModels });
     if (typeof patch?.ticketsFile === 'string' && patch.ticketsFile === '') {
       writeConfig({ ticketsFile: '' });
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tickets:changed', readTickets());
@@ -129,7 +173,7 @@ function registerIpc() {
   ipcMain.handle('doc:aiUpdate', (_e, docPath: string, instruction: string) => {
     const root = readRoot();
     if (!root) throw new Error('Aucun dossier de projet');
-    return proposeDocUpdate(root, String(docPath), String(instruction ?? ''), readConfig().ticketsFile);
+    return proposeDocUpdate(root, String(docPath), String(instruction ?? ''), readConfig().ticketsFile, resolveModel(readConfig().modelDocs));
   });
   ipcMain.handle('scripts:save', (_e, name: string, content: string, create: boolean) =>
     withRoot((root) => { saveScript(root, String(name), String(content), create === true); return loadProject(root); }));
@@ -155,11 +199,15 @@ function registerIpc() {
   }));
   ipcMain.handle('subagents:remove', (_e, name: string) => withRoot((root) => { removeSubagent(root, String(name)); return loadProject(root); }));
   ipcMain.handle('stats:rebuild', () => withRoot((root) => { refreshStats(root, true); return loadProject(root); }));
-  ipcMain.handle('ai:suggest', (_e, req: never) => withRoot((root) => suggestText(root, req)));
+  ipcMain.handle('ai:suggest', (_e, req: never) => {
+    const kind = String((req as { kind?: unknown })?.kind ?? '');
+    const model = kind === 'doc' || kind === 'memory' ? resolveModel(readConfig().modelDocs) : resolveModel(readConfig().modelProjets);
+    return withRoot((root) => suggestText(root, req, model));
+  });
   ipcMain.handle('feat:split', (_e, featId: string) => {
     const root = readRoot();
     if (!root) throw new Error('Aucun dossier de projet');
-    return splitFeat(root, String(featId));
+    return splitFeat(root, String(featId), resolveModel(readConfig().modelProjets));
   });
   ipcMain.handle('feat:applySplit', (_e, featId: string, proposal: never) =>
     withRoot((root) => applySplit(root, String(featId), proposal)));
@@ -261,7 +309,7 @@ const bgCapTokens = (root: string) => (loadProject(root).archSettings?.bgCap ?? 
 const workflowNameOf = (root: string, id: string) => loadProject(root).workflows.find((w) => w.id === id)?.name ?? '';
 
 void app.whenReady().then(() => {
-  setDefaultModel(readConfig().model ?? '');
+  setDefaultModel(resolveModel(readConfig().model ?? '') ?? readConfig().model ?? '');
   setApprovalProvider(isApproved);
   startScheduler({
     getRoot: readRoot,

@@ -377,7 +377,7 @@ function nextId(root: string, prefix: string): string {
 }
 
 /** Demande à Claude de découper une feat en pulses (et en cycle si elle n'en a pas). Ne crée rien. */
-export async function splitFeat(root: string, featId: string): Promise<SplitProposal> {
+export async function splitFeat(root: string, featId: string, model?: string): Promise<SplitProposal> {
   const d = loadProject(root);
   const feat = d.feats.find((f) => f.id === featId) ?? fail('Feat introuvable : ' + featId);
   const spec = d.docs.find((x) => x.path === feat.spec);
@@ -393,7 +393,7 @@ export async function splitFeat(root: string, featId: string): Promise<SplitProp
     '{"cycle": {"title": "...", "period": "..."} ou null, "pulses": [{"title": "...", "workflow": "<un workflow de la liste>"}]}',
     'Entre 2 et 8 pulses, titres courts et concrets, dans l\'ordre où on les fait.'
   ].filter(Boolean).join('\n\n');
-  const text = await askClaude(prompt, root);
+  const text = await askClaude(prompt, root, model);
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) fail('Claude n\'a pas renvoyé de découpage lisible.');
   let raw: { cycle?: { title?: unknown; period?: unknown } | null; pulses?: { title?: unknown; workflow?: unknown }[] };
@@ -428,7 +428,7 @@ export function applySplit(root: string, featId: string, proposal: SplitProposal
 
 
 /** Demande à Claude une nouvelle version d'un document, d'après ses tickets liés et la consigne. Ne modifie rien. */
-export async function proposeDocUpdate(root: string, docPath: string, instruction: string, ticketsFile?: string): Promise<{ body: string; linked: string[] }> {
+export async function proposeDocUpdate(root: string, docPath: string, instruction: string, ticketsFile?: string, model?: string): Promise<{ body: string; linked: string[] }> {
   const d = loadProject(root);
   const doc = d.docs.find((x) => x.path === docPath) ?? fail('Document introuvable : ' + docPath);
   const jira = loadTickets(root, ticketsFile).tickets.filter((t) => (t.docs ?? []).includes(docPath));
@@ -447,7 +447,7 @@ export async function proposeDocUpdate(root: string, docPath: string, instructio
     `Contenu actuel :\n<<<\n${doc.body.slice(0, 40000)}\n>>>`,
     'Réponds uniquement avec le markdown complet de la nouvelle version, sans commentaire ni bloc de code autour.'
   ].join('\n\n');
-  let out = (await askClaude(prompt, root)).trim();
+  let out = (await askClaude(prompt, root, model)).trim();
   const fenced = out.match(/^```(?:markdown|md)?\n([\s\S]*)\n```$/);
   if (fenced) out = fenced[1];
   if (!out) fail('Claude n\'a rien proposé.');

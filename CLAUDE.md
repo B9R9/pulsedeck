@@ -33,3 +33,4 @@ La maquette de référence est l'artifact « Maquette interface Claude Code » (
 - `docs/**/*.md` : title, type (cookbook, runbook, spec, adr, guide), project, updated.
 - `sessions/*.md` : récap d'une session. `memory/*.md` : mémoire du projet.
 - `scripts/*.sh|mjs|py` : vrais fichiers exécutables, un niveau. Une étape de workflow de type script les lance par une commande (`bash scripts/nom.sh`) ; le lancement montre le contenu et demande l'accord.
+- Tickets : un fichier CSV par projet, `Tickets/<nom du projet>.csv` à la racine du projet (créé au premier lancement) — le nom du dossier du projet donne le nom du fichier. Une ligne par ticket, modifiable hors de l'app dans Google Sheets ou un tableur ; les modifications externes sont reprises via la surveillance du fichier. L'ancien `jira/jira-tickets.json` sert seulement à amorcer le fichier d'un projet (lignes dont la colonne `project` correspond). Les liens et modifications locales restent dans `links/tickets.json`.

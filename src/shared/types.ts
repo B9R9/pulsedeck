@@ -435,14 +435,29 @@ export interface SuggestRequest {
   instruction: string;
 }
 
+/** Un modèle local Ollama : identifiant exact, nom affiché dans l'interface, utilisé ou ignoré. */
+export interface LocalModel {
+  id: string;
+  label: string;
+  on: boolean;
+}
+
 export interface AppSettings {
   root: string;
+  /** Projets déjà ouverts dans l'app, le projet de travail en premier. */
+  projects: string[];
   /** Fichier de tickets choisi à la main (vide : détection automatique). */
   ticketsChosen: string;
   ticketsFile: string;
   ticketsOrigin: 'choisi' | 'drive' | 'projet' | 'aucun';
-  /** '' (défaut de Claude Code), 'sonnet', 'opus' ou 'haiku'. */
+  /** '' (défaut de Claude Code), 'sonnet', 'opus', 'haiku' ou l'identifiant d'un modèle local actif. */
   model: string;
+  /** Modèle des actions de la page Projet (découpage d'une feat, suggestions). Vide : modèle par défaut. */
+  modelProjets: string;
+  /** Modèle des actions de la page Documentation (mise à jour d'un doc, suggestions). Vide : modèle par défaut. */
+  modelDocs: string;
+  /** Modèles locaux Ollama que l'interface propose, avec leur nom affiché et leur état. */
+  localModels: LocalModel[];
   dataDir: string;
   version: string;
 }
@@ -460,7 +475,11 @@ export interface WorkspaceApi {
   saveScript(name: string, content: string, create: boolean): Promise<ProjectData>;
   deleteScript(name: string): Promise<ProjectData>;
   loadSettings(): Promise<AppSettings>;
-  setSettings(patch: { model?: string; ticketsFile?: '' }): Promise<AppSettings>;
+  /** Modèles locaux utilisables relevés auprès d'Ollama, avec leur nom affiché. */
+  listOllamaModels(): Promise<LocalModel[]>;
+  setSettings(patch: { model?: string; modelProjets?: string; modelDocs?: string; ticketsFile?: ''; localModels?: LocalModel[] }): Promise<AppSettings>;
+  /** Change le projet de travail vers un dossier déjà connu (sans boîte de dialogue). */
+  setWorkspace(root: string): Promise<ProjectData | null>;
   loadTickets(): Promise<TicketsData>;
   chooseTicketsFile(): Promise<TicketsData | null>;
   linkTicket(key: string, links: { parent: string; docs: string[] }): Promise<TicketsData>;

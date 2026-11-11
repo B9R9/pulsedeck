@@ -4,11 +4,10 @@ import path from 'node:path';
 import type { ArchNode, NodeState, RunEvent, TreeEdge, TreeNode } from '../src/shared/types';
 import { ask, runAgent } from './claude-runner';
 import { loadProject, writeInboxAlert, writeSessionFile } from './project-store';
-import { MODEL_IDS } from './models';
+import { resolveModel } from './models';
 import { recordVersion } from './versions';
 import { fmtDuration, fmtK, refreshStats } from './stats';
 
-const MODELS = MODEL_IDS;
 const TOOL_MAP: Record<string, string[]> = { 'Lecture': [], 'Édition': ['Edit', 'Write'], 'Commandes': ['Bash'] };
 const MAX_STEPS = 60;
 const SCRIPT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -85,12 +84,12 @@ export async function runWorkflow(o: Options): Promise<void> {
 
   async function runAgentNode(n: ArchNode): Promise<Outcome> {
     const attempts = Math.max(1, n.retries || 1);
-    const chain = [n.model, ...n.fallback].filter((m) => MODELS[m]);
+    const chain = [n.model, ...n.fallback].filter((m) => resolveModel(m));
     const tools = [...new Set(n.tools.flatMap((t) => TOOL_MAP[t] ?? []))];
     let last = '';
     for (let i = 0; i < attempts && !o.abort.aborted; i++) {
       lastAttempts = i + 1;
-      const model = MODELS[chain[Math.min(i, chain.length - 1)] ?? ''] ?? undefined;
+      const model = resolveModel(chain[Math.min(i, chain.length - 1)] ?? '');
       set(n.id, 'run', attempts > 1 ? `essai ${i + 1} sur ${attempts}` : '');
       const writes = n.docs.filter((d) => d.role === 'write').map((d) => d.path);
       const prompt = [

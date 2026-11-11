@@ -61,12 +61,12 @@ export function cleanAnswer(text: string, guide: Guide): string {
 }
 
 /** Propose un texte pour un champ. N'écrit rien : l'utilisateur décide de l'utiliser ou non. */
-export async function suggestText(root: string, req: SuggestRequest): Promise<string> {
+export async function suggestText(root: string, req: SuggestRequest, model?: string): Promise<string> {
   const kind = clip(req?.kind, 30);
   const field = clip(req?.field, 30);
   const guide = guideFor(kind, field);
   if (!guide) throw new Error("Pas de suggestion possible pour ce champ.");
-  const answer = cleanAnswer(await askClaude(buildPrompt({ ...req, kind, field }, guide), root), guide);
+  const answer = cleanAnswer(await askClaude(buildPrompt({ ...req, kind, field }, guide), root, model), guide);
   if (!answer) throw new Error("Claude n'a rien proposé. Réessaie avec une précision.");
   return answer;
 }

@@ -82,6 +82,11 @@ async function choose() {
   if (next) data.value = next;
 }
 
+async function setWorkspace(root: string) {
+  const next = await window.api.setWorkspace(root);
+  if (next) data.value = next;
+}
+
 export function useProject() {
   if (!data.value && !loading.value) void load();
   return {
@@ -89,6 +94,7 @@ export function useProject() {
     loading,
     reload: load,
     choose,
+    setWorkspace,
     resolveInbox,
     importDriveDoc,
     saveEntity,

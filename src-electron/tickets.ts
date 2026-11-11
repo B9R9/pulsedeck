@@ -1,36 +1,126 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { Ticket, TicketEdits, TicketsData } from '../src/shared/types';
 
-const FILE = 'jira-tickets.json';
+const LEGACY_CSV = 'jira-tickets.csv';
+const LEGACY_JSON = 'jira-tickets.json';
+/** Dossier du projet qui reçoit les tickets : un fichier CSV par projet. */
+const TICKETS_DIR = 'Tickets';
+/** Colonnes du CSV, dans l'ordre : une ligne par ticket. Modifiable dans Google Sheets (ouvrir le CSV, modifier, Fichier > Enregistrer). */
+const COLONNES = ['key', 'project', 'summary', 'description', 'type', 'status', 'statusCategory', 'priority', 'assignee', 'created', 'updated'] as const;
 
-/** Dossiers où Google Drive pour ordinateur monte AFTERLIFE/jira-tickets.json. */
-function driveCandidates(): string[] {
-  const home = os.homedir();
-  const out: string[] = [];
-  const cloud = path.join(home, 'Library', 'CloudStorage');
-  try {
-    for (const d of fs.readdirSync(cloud)) {
-      if (!d.startsWith('GoogleDrive')) continue;
-      for (const my of ['Mon Drive', 'My Drive']) out.push(path.join(cloud, d, my, 'AFTERLIFE', FILE));
-    }
-  } catch {
-    /* Drive pour ordinateur n'est pas installé */
-  }
-  for (const my of ['Mon Drive', 'My Drive']) out.push(path.join(home, 'Google Drive', my, 'AFTERLIFE', FILE));
-  out.push(path.join(home, 'Google Drive', 'AFTERLIFE', FILE));
-  return out;
+const csvCell = (v: unknown) => {
+  const s = v == null ? '' : String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
+};
+
+/** Anciens fichiers globaux (tous projets confondus) : servent à amorcer le fichier d'un projet. */
+function legacyFiles(root: string): string[] {
+  return [path.join(root, 'jira', LEGACY_JSON), path.join(root, 'jira', LEGACY_CSV)].filter((f) => fs.existsSync(f));
 }
 
-/** Fichier lu par l'app : choix manuel, sinon Google Drive, sinon copie dans le projet. */
+/** Nom de fichier du projet : le dossier du projet donne le nom (ex. Discovers -> Discovers.csv). */
+const projectFile = (project: string) => project.replace(/[/\\:]/g, '-').trim() + '.csv';
+
+/** Garantit Tickets/<projet>.csv dans le projet : s'il manque, le crée avec les lignes de ce projet prises dans un ancien fichier global, sinon la ligne d'en-têtes seule. */
+function ensureProjectFile(root: string, project: string): string | null {
+  const dir = path.join(root, TICKETS_DIR);
+  const file = path.join(dir, projectFile(project));
+  if (fs.existsSync(file)) return file;
+  if (!fs.existsSync(dir)) {
+    for (const legacy of legacyFiles(root)) {
+      try {
+        const mine = readSource(legacy).issues.filter((t) => String(t.project ?? '').trim().toLowerCase() === project.toLowerCase());
+        if (!mine.length) continue;
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(file, [COLONNES.join(','), ...mine.map((t) => COLONNES.map((c) => csvCell(t[c as keyof Ticket])).join(','))].join('\r\n') + '\r\n');
+        return file;
+      } catch {
+        /* fichier illisible : on essaie le suivant */
+      }
+    }
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, COLONNES.join(',') + '\r\n');
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/** Fichier lu par l'app : choix manuel, sinon Tickets/<nom du projet>.csv à la racine du projet (créé s'il manque), sinon l'ancien fichier global. */
 export function resolveTicketsFile(root: string, chosen?: string): { file: string; origin: 'choisi' | 'drive' | 'projet' } | null {
   if (chosen && fs.existsSync(chosen)) return { file: chosen, origin: 'choisi' };
-  const drive = driveCandidates().find((f) => fs.existsSync(f));
-  if (drive) return { file: drive, origin: 'drive' };
-  const local = path.join(root, 'jira', FILE);
-  if (fs.existsSync(local)) return { file: local, origin: 'projet' };
-  return null;
+  if (root) {
+    const file = ensureProjectFile(root, path.basename(root));
+    if (file) return { file, origin: 'projet' };
+  }
+  const legacy = legacyFiles(root)[0];
+  return legacy ? { file: legacy, origin: 'projet' } : null;
+}
+
+/** Découpe un texte CSV (guillemets, virgules et retours à la ligne dans les cellules). */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else quoted = false;
+      } else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      if (row.some((v) => v.trim() !== '')) rows.push(row);
+      row = [];
+      field = '';
+    } else field += c;
+  }
+  row.push(field);
+  if (row.some((v) => v.trim() !== '')) rows.push(row);
+  return rows;
+}
+
+/** Lit le fichier des tickets : CSV (une ligne par ticket) ou ancien export JSON Jira. */
+function readSource(file: string): { exportedAt: string; issues: Ticket[] } {
+  const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  if (!file.toLowerCase().endsWith('.csv')) {
+    const raw = JSON.parse(text) as { exportedAt?: string; issues?: Ticket[] };
+    return { exportedAt: raw.exportedAt ?? '', issues: Array.isArray(raw.issues) ? raw.issues : [] };
+  }
+  const rows = parseCsv(text);
+  const header = (rows.shift() ?? []).map((h) => h.trim().toLowerCase());
+  const issues: Ticket[] = [];
+  for (const row of rows) {
+    const get = (name: string) => {
+      const i = header.indexOf(name.toLowerCase());
+      return i >= 0 ? (row[i] ?? '').trim() : '';
+    };
+    const key = get('key');
+    const summary = get('summary');
+    if (!key || !summary) continue;
+    issues.push({
+      key,
+      project: get('project') || key.split('-')[0],
+      summary,
+      description: get('description'),
+      type: get('type') || null,
+      status: get('status') || null,
+      statusCategory: get('statuscategory') || null,
+      priority: get('priority') || null,
+      assignee: get('assignee') || null,
+      created: get('created'),
+      updated: get('updated')
+    });
+  }
+  return { exportedAt: '', issues };
 }
 
 interface Entry { parent: string; docs: string[]; edits?: TicketEdits; local?: Ticket }
@@ -137,19 +227,17 @@ export function deleteLocalTicket(root: string, key: string, chosen?: string): T
 function sourceTickets(root: string, chosen?: string): Ticket[] {
   const found = resolveTicketsFile(root, chosen);
   if (!found) return [];
-  const raw = JSON.parse(fs.readFileSync(found.file, 'utf8')) as { issues?: Ticket[] };
-  return Array.isArray(raw.issues) ? raw.issues : [];
+  return readSource(found.file).issues;
 }
 
 export function loadTickets(root: string, chosen?: string): TicketsData {
   const found = resolveTicketsFile(root, chosen);
   const blank = { statuses: DEFAULT_STATUSES, priorities: ['Highest', 'High', 'Medium', 'Low', 'Lowest'], types: ['Task', 'Bug', 'Story'] };
   if (!found) {
-    return { file: '', origin: 'aucun', exportedAt: '', readAt: new Date().toISOString(), tickets: [], ...blank, error: `Aucun fichier ${FILE} trouvé (Google Drive > AFTERLIFE).` };
+    return { file: '', origin: 'aucun', exportedAt: '', readAt: new Date().toISOString(), tickets: [], ...blank, error: `Aucun fichier Tickets/<nom du projet>.csv trouvé (et dossier du projet inaccessible en écriture).` };
   }
   try {
-    const raw = JSON.parse(fs.readFileSync(found.file, 'utf8')) as { exportedAt?: string; issues?: Ticket[] };
-    const source = Array.isArray(raw.issues) ? raw.issues : [];
+    const { exportedAt, issues: source } = readSource(found.file);
     const links = readLinks(root);
     const cats = new Map<string, string>(DEFAULT_STATUSES.map((x) => [x.name, x.category]));
     for (const t of source) if (t.status && t.statusCategory) cats.set(t.status, t.statusCategory);
@@ -170,7 +258,7 @@ export function loadTickets(root: string, chosen?: string): TicketsData {
     }
     const uniq = (xs: (string | null | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x))];
     return {
-      file: found.file, origin: found.origin, exportedAt: raw.exportedAt ?? '', readAt: new Date().toISOString(), tickets,
+      file: found.file, origin: found.origin, exportedAt, readAt: new Date().toISOString(), tickets,
       statuses: [...cats].map(([name, category]) => ({ name, category })),
       priorities: uniq([...blank.priorities, ...source.map((t) => t.priority)]),
       types: uniq([...blank.types, ...source.map((t) => t.type)]),

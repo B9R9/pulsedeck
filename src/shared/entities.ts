@@ -61,6 +61,8 @@ export const DOC_TYPES = opts(['spec', 'Spec'], ['runbook', 'Runbook'], ['cookbo
 export const DOC_DIRS: Record<string, string> = { spec: 'docs/specs', runbook: 'docs/runbooks', cookbook: 'docs/cookbooks', adr: 'docs/decisions', guide: 'docs' };
 export const PURPOSES = ['Général', 'Sécurité', 'Migration', 'Simple', 'Docs', 'Tests', 'Revue'];
 export const MODELS = ['Haiku 5.5', 'Sonnet 5.5', 'Opus 5.5', 'qwen2.5-coder:14b', 'llama3.1:8b', 'mistral:7b'];
+/** Modèles locaux (Ollama), reconnaissables à leur étiquette de taille. */
+export const LOCAL_MODELS = MODELS.filter((m) => m.includes(':'));
 export const TOOLS = ['Lecture', 'Édition', 'Commandes', 'Web'];
 const idField = (extra: Partial<FieldDef>): FieldDef => ({ key: 'id', label: 'Nom du fichier', type: 'string', required: true, createOnly: true, hint: 'Rempli automatiquement. Ne pourra plus changer.', half: true, ...extra });
 

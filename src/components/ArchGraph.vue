@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { ArchEdge, ArchNode } from '../shared/types';
+import { LOCAL_MODELS } from '../shared/entities';
 
 /**
  * Grille du workflow. Une case fait CX par ROW pixels ; un nœud occupe une colonne et deux demi-lignes.
@@ -26,7 +27,7 @@ const KIND = {
   fail: { stroke: '#fca5a5', dash: '6 4', label: 'échec' },
   blocked: { stroke: '#fcd34d', dash: '2 4', label: 'bloqué' }
 };
-const LOCAL = ['qwen2.5-coder:14b', 'llama3.1:8b', 'mistral:7b'];
+const LOCAL = LOCAL_MODELS;
 
 /** Colonne de repli pour les anciens fichiers sans colonne : la profondeur dans le graphe. */
 const depthOf = computed(() => {
