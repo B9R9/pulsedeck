@@ -9,7 +9,7 @@
         <input v-model="instruction" class="precin" type="text" placeholder="Précision pour l'IA (facultatif)" aria-label="Précision pour l'IA" @keydown.enter.prevent="generate" />
         <button type="button" class="btn small" :disabled="busy" @click="generate">{{ result ? 'Refaire' : 'Générer' }}</button>
       </div>
-      <p v-if="busy" class="wait" role="status">Claude lit le projet et rédige.</p>
+      <p v-if="busy" class="wait" role="status">Le modèle lit le projet et rédige.</p>
       <p v-if="error" class="err" role="alert">{{ error }}</p>
       <pre v-if="result && !busy" class="out" :class="{ code: mono }">{{ result }}</pre>
       <div v-if="result && !busy" class="acts">

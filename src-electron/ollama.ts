@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { LOCAL_MODELS } from '../src/shared/entities';
+import { LOCAL_MODELS } from './models';
 import type { LocalModel } from '../src/shared/types';
 
 /** Adresse de l'API Ollama. */

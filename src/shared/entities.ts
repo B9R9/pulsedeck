@@ -10,6 +10,8 @@ export interface FieldDef {
   /** Pour type 'ref' : ce que le formulaire propose (cycles, feats, docs, workflows). */
   refKind?: 'cycle' | 'feat' | 'doc' | 'workflow' | 'session' | 'ticket';
   required?: boolean;
+  /** Champ enum dont les options ne sont pas exhaustives : toute valeur non vide passe (ex. types de doc personnalisés). */
+  freeText?: boolean;
   /** Saisi à la création seulement : c'est le nom du fichier. */
   createOnly?: boolean;
   hint?: string;
@@ -60,9 +62,9 @@ const idHint = 'Lettres, chiffres, tirets. Sert de nom de fichier, non modifiabl
 export const DOC_TYPES = opts(['spec', 'Spec'], ['runbook', 'Runbook'], ['cookbook', 'Cookbook'], ['adr', 'Décision'], ['guide', 'Guide']);
 export const DOC_DIRS: Record<string, string> = { spec: 'docs/specs', runbook: 'docs/runbooks', cookbook: 'docs/cookbooks', adr: 'docs/decisions', guide: 'docs' };
 export const PURPOSES = ['Général', 'Sécurité', 'Migration', 'Simple', 'Docs', 'Tests', 'Revue'];
-export const MODELS = ['Haiku 5.5', 'Sonnet 5.5', 'Opus 5.5', 'qwen2.5-coder:14b', 'llama3.1:8b', 'mistral:7b'];
-/** Modèles locaux (Ollama), reconnaissables à leur étiquette de taille. */
-export const LOCAL_MODELS = MODELS.filter((m) => m.includes(':'));
+export const MODELS = ['Haiku 5.5', 'Sonnet 5.5', 'Opus 5.5', 'gpt-oss'];
+/** Un modèle local (Ollama) se reconnaît à son étiquette de taille : `gpt-oss:20b`, `llama3.1:8b`… */
+export const isLocalModel = (m: string) => m.includes(':');
 export const TOOLS = ['Lecture', 'Édition', 'Commandes', 'Web'];
 const idField = (extra: Partial<FieldDef>): FieldDef => ({ key: 'id', label: 'Nom du fichier', type: 'string', required: true, createOnly: true, hint: 'Rempli automatiquement. Ne pourra plus changer.', half: true, ...extra });
 
@@ -112,7 +114,7 @@ export const ENTITIES: Record<EntityKind, EntityDef> = {
     body: { label: 'Contenu en markdown', ai: true },
     fields: [
       { key: 'title', label: 'Titre', type: 'string', required: true },
-      { key: 'type', label: 'Type', type: 'enum', options: DOC_TYPES, required: true, half: true },
+      { key: 'type', label: 'Type', type: 'enum', options: DOC_TYPES, freeText: true, required: true, half: true },
       { key: 'project', label: 'Projet', type: 'string', half: true },
       { key: 'updated', label: 'Mis à jour le', type: 'string', hint: 'AAAA-MM-JJ', half: true }
     ]

@@ -84,6 +84,45 @@
       </section>
 
       <section class="card">
+        <span class="h">Formats de sortie</span>
+        <p class="hint">
+          Décide comment Claude rédige tes notes de session, tes documents et ses réponses : pars d'un modèle prêt à l'emploi ou écris tes attentes.
+          Le format par défaut de chaque type est appliqué automatiquement à la génération.
+        </p>
+        <div class="choices">
+          <button v-for="k in FORMAT_KINDS" :key="k" type="button" class="switch" :class="{ on: tab === k }" @click="openTab(k)">{{ KIND_LABEL[k] }}</button>
+        </div>
+
+        <div v-for="f in formatsOf" :key="f.id" class="line">
+          <div class="info">
+            <span class="label">{{ f.label }} <span v-if="defautOf(tab) === f.id" class="tag ok">Par défaut</span></span>
+            <span class="hint clamp">{{ f.text }}</span>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn" @click="openEditor(f)">Modifier</button>
+            <button type="button" class="btn" :disabled="defautOf(tab) === f.id" @click="applyDefaut(f.id)">Défaut</button>
+            <button type="button" class="ic" aria-label="Supprimer le format" @click="removeFormat(f.id)">✕</button>
+          </div>
+        </div>
+        <p v-if="!formatsOf.length" class="hint empty">Aucun format pour ce type : Claude suit sa structure habituelle.</p>
+
+        <div v-if="draft" class="editor">
+          <input v-model="draft.label" aria-label="Nom du format" placeholder="Nom du format" />
+          <textarea v-model="draft.text" aria-label="Consigne du format" rows="5"
+            placeholder="Décris la structure attendue : sections, ton, longueur. Claude lit cette consigne à chaque génération." />
+          <div class="choices">
+            <span class="hint">Partir d'un modèle :</span>
+            <button v-for="p in KIND_PRESETS[tab]" :key="p.label" type="button" class="switch" @click="applyPreset(p.text)">{{ p.label }}</button>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn" :disabled="!draft.label.trim() || !draft.text.trim()" @click="saveDraft">Enregistrer</button>
+            <button type="button" class="btn" @click="draft = null">Annuler</button>
+          </div>
+        </div>
+        <button v-else type="button" class="btn" @click="openNew">Nouveau format</button>
+      </section>
+
+      <section class="card">
         <span class="h">À propos</span>
         <div class="kv"><span>Version</span><span class="mono">{{ s?.version || '' }}</span></div>
         <div class="kv"><span>Données de l'app</span><span class="mono">{{ s?.dataDir || '' }}</span></div>
@@ -96,11 +135,33 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import type { AppSettings, LocalModel } from '../shared/types';
+import type { AppSettings, FormatKind, LocalModel, OutputFormat } from '../shared/types';
 import { useProject } from '../composables/useProject';
 import { useTickets } from '../composables/useTickets';
+import { useSettings } from '../composables/useSettings';
 
-const s = ref<AppSettings | null>(null);
+const FORMAT_KINDS: FormatKind[] = ['recap', 'document', 'reponse'];
+const KIND_LABEL: Record<FormatKind, string> = { recap: 'Récaps de session', document: 'Documents', reponse: 'Réponses' };
+
+/** Modèles prêts à l'emploi : ils remplissent la consigne, que l'utilisateur peut ensuite ajuster. */
+const KIND_PRESETS: Record<FormatKind, { label: string; text: string }[]> = {
+  recap: [
+    { label: 'Récap standard', text: 'Structure la note de session ainsi : Objectif (une phrase), Ce qui a été fait (liste courte), Décisions (liste, écris aucune si vide), Fichiers touchés (chemins), À suivre (prochaines étapes), puis le coût et la durée.' },
+    { label: 'Points clés', text: 'Rends la note de session en 3 à 5 puces au maximum : ce qui a été fait, les décisions prises et la prochaine étape. Pas de détails de mise en œuvre.' },
+    { label: 'Journal', text: 'Rends la note de session sous forme de journal chronologique : une ligne par étape marquante, dans l\'ordre, avec son résultat.' }
+  ],
+  document: [
+    { label: 'Fiche', text: 'Structure le document ainsi : Objet (une phrase), Contexte, Détails (sections courtes), Liens (cycles, feats, pulses, tickets concernés).' },
+    { label: 'Procédure', text: 'Structure le document ainsi : Prérequis, Étapes numérotées avec les commandes exactes, Vérification, Retour arrière. Chaque étape doit pouvoir être suivie sans autre document.' },
+    { label: 'Compte rendu', text: 'Structure le document ainsi : Participants, Décisions prises, Actions à mener avec porteur et échéance, Points ouverts.' }
+  ],
+  reponse: [
+    { label: 'Réponse courte', text: 'Réponds en 3 phrases au maximum, puis au besoin une puce par point d\'attention. Va droit au résultat.' },
+    { label: 'Analyse', text: 'Structure la réponse ainsi : Contexte (2 phrases), Analyse, Recommandation, Risques. Reste factuel et cite les fichiers concernés.' }
+  ]
+};
+
+const { settings: s, loadSettings, updateSettings } = useSettings();
 const error = ref('');
 const { choose, reload, setWorkspace } = useProject();
 const { chooseFile, reload: reloadTickets } = useTickets();
@@ -120,7 +181,7 @@ const originCls = computed(() => (s.value?.ticketsOrigin === 'aucun' ? 'fail' : 
 
 async function refresh() {
   try {
-    s.value = await window.api.loadSettings();
+    await loadSettings();
     error.value = '';
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -141,18 +202,48 @@ const changeProject = (p: string) => run(async () => {
   await reloadTickets();
 });
 const pickTickets = () => run(() => chooseFile());
-const autoTickets = () => run(async () => { s.value = await window.api.setSettings({ ticketsFile: '' }); await reloadTickets(); });
-const setModel = (value: string) => run(async () => { s.value = await window.api.setSettings({ model: value }); });
-const setModelProjets = (value: string) => run(async () => { s.value = await window.api.setSettings({ modelProjets: value }); });
-const setModelDocs = (value: string) => run(async () => { s.value = await window.api.setSettings({ modelDocs: value }); });
+const autoTickets = () => run(async () => { await updateSettings({ ticketsFile: '' }); await reloadTickets(); });
+const setModel = (value: string) => run(async () => { await updateSettings({ model: value }); });
+const setModelProjets = (value: string) => run(async () => { await updateSettings({ modelProjets: value }); });
+const setModelDocs = (value: string) => run(async () => { await updateSettings({ modelDocs: value }); });
 const saveLocal = (id: string, patch: Partial<LocalModel>) => run(async () => {
   // Objets purs uniquement : les proxys Vue ne traversent pas l'IPC (« An object could not be cloned »).
   const next = (s.value?.localModels ?? []).map((m) => ({ id: m.id, label: m.label, on: m.on }))
     .map((m) => (m.id === id ? { ...m, ...patch } : m));
-  s.value = await window.api.setSettings({ localModels: next });
+  await updateSettings({ localModels: next });
 });
 const toggleLocal = (id: string) => saveLocal(id, { on: !(s.value?.localModels ?? []).find((m) => m.id === id)?.on });
 const renameLocal = (id: string, e: Event) => saveLocal(id, { label: ((e.target as HTMLInputElement).value || '').trim() || id });
+
+const tab = ref<FormatKind>('recap');
+const draft = ref<OutputFormat | null>(null);
+const formatsOf = computed(() => (s.value?.formats ?? []).filter((f) => f.kind === tab.value));
+const defautOf = (k: FormatKind) => (s.value?.formatsDefaut ?? {})[k] ?? '';
+
+const openTab = (k: FormatKind) => { tab.value = k; draft.value = null; };
+const openNew = () => { draft.value = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label: '', kind: tab.value, text: '' }; };
+const openEditor = (f: OutputFormat) => { draft.value = { ...f }; };
+const applyPreset = (text: string) => { if (draft.value) draft.value.text = text; };
+
+const saveFormats = (next: OutputFormat[]) => run(async () => { s.value = await window.api.setSettings({ formats: next }); });
+const saveDraft = () => {
+  const d = draft.value;
+  if (!d || !d.label.trim() || !d.text.trim()) return;
+  const clean = { id: d.id, label: d.label.trim(), kind: d.kind, text: d.text.trim() };
+  const next = [...(s.value?.formats ?? [])];
+  const i = next.findIndex((f) => f.id === clean.id);
+  if (i >= 0) next[i] = clean; else next.push(clean);
+  saveFormats(next);
+  draft.value = null;
+};
+const removeFormat = (id: string) => {
+  // Le défaut qui pointait vers ce format est retiré par la validation du main process.
+  saveFormats((s.value?.formats ?? []).filter((f) => f.id !== id));
+  draft.value = null;
+};
+const applyDefaut = (id: string) => run(async () => {
+  s.value = await window.api.setSettings({ formatsDefaut: { ...(s.value?.formatsDefaut ?? {}), [tab.value]: id } });
+});
 
 onMounted(() => {
   void refresh();
@@ -172,4 +263,11 @@ onMounted(() => {
 .lmname { width: 100%; max-width: 320px; background: none; border: none; border-bottom: 1px solid var(--line-2); color: var(--text); font-size: 14px; padding: 2px 0; &:focus { outline: none; border-bottom-color: var(--blue); } }
 .choices { display: flex; flex-wrap: wrap; gap: 6px; }
 .kv { display: flex; gap: 16px; font-size: 13px; > span:first-child { flex: 0 0 150px; color: var(--muted-2); } > span:last-child { overflow-wrap: anywhere; } }
+.row-actions { display: flex; gap: 6px; align-items: center; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 480px; }
+.editor { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px;
+  input, textarea { width: 100%; background: none; border: none; border-bottom: 1px solid var(--line-2); color: var(--text); font-size: 14px; padding: 2px 0; resize: vertical;
+    &:focus { outline: none; border-bottom-color: var(--blue); } }
+  textarea { font-family: inherit; line-height: 1.5; }
+}
 </style>

@@ -26,6 +26,6 @@ export default defineConfig(() => ({
     },
     bundler: 'packager',
     packager: {},
-    builder: { appId: 'fi.talle.claudeui' }
+    builder: { appId: 'fi.talle.pulsedeck' }
   }
 }));

@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { exec } from 'node:child_process';
 import matter from 'gray-matter';
 import { DOC_DIRS, ENTITIES, NODE_FIELDS } from '../src/shared/entities';
 import type { EntityKind, FieldDef } from '../src/shared/entities';
 import type { ProjectData } from '../src/shared/types';
-import { loadProject } from './project-store';
+import { loadProject, readDocTypes } from './project-store';
 import { refreshStats } from './stats';
 import { askClaude } from './claude-runner';
 import { loadTickets } from './tickets';
@@ -12,6 +13,7 @@ import type { SplitProposal } from '../src/shared/types';
 
 type Fields = Record<string, unknown>;
 const fail = (message: string): never => { throw new Error(message); };
+const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 
 /** Vérifie et convertit une valeur selon son champ. Renvoie undefined pour « effacer ». */
 function coerce(def: FieldDef, value: unknown): unknown {
@@ -40,6 +42,7 @@ function coerce(def: FieldDef, value: unknown): unknown {
       return value === true;
     case 'enum': {
       const v = String(value);
+      if (def.freeText) return v;
       if (!def.options?.some((o) => o.value === v)) fail(`Valeur refusée pour « ${def.label} ».`);
       return v;
     }
@@ -81,7 +84,7 @@ function starterWorkflow(): Fields {
   };
 }
 
-export function saveEntity(root: string, kind: EntityKind, relPath: string | null, fields: Fields, body?: string): ProjectData {
+export function saveEntity(root: string, kind: EntityKind, relPath: string | null, fields: Fields, body?: string, emptyStart?: boolean): ProjectData {
   const def = ENTITIES[kind] ?? fail('Type inconnu : ' + kind);
   if (kind === 'session') fail('Les sessions ne se modifient pas à la main.');
   const creating = relPath === null;
@@ -98,11 +101,13 @@ export function saveEntity(root: string, kind: EntityKind, relPath: string | nul
     for (const f of def.fields) if (f.required && (fields[f.key] === undefined || fields[f.key] === '')) fail(`Le champ « ${f.label} » est obligatoire.`);
     const id = def.idPattern ? String(fields.id ?? '') : slug(String(fields.title ?? ''), kind);
     if (def.idPattern && !def.idPattern.test(id)) fail('Identifiant invalide. ' + (def.idHint ?? ''));
-    const dir = kind === 'doc' ? DOC_DIRS[String(fields.type)] ?? fail('Type de document inconnu.') : def.dir;
+    const dir = kind === 'doc' ? (DOC_DIRS[String(fields.type)] ?? (readDocTypes(root).some((t) => t.id === fields.type) ? path.join('docs', String(fields.type)) : fail('Type de document inconnu.'))) : def.dir;
     file = path.resolve(root, dir, id + '.md');
     confine(root, def.dir, !!def.recursive, path.relative(root, file));
     if (fs.existsSync(file)) fail('Ce fichier existe déjà : ' + path.relative(root, file));
-    data = kind === 'workflow' ? starterWorkflow() : {};
+    // emptyStart : création déclenchée par un dépôt dans la grille — la première étape
+    // arrive juste après via workflowOp, sans les deux étapes d'exemple.
+    data = kind === 'workflow' && emptyStart !== true ? starterWorkflow() : {};
     text = body ?? '';
   } else {
     file = confine(root, def.dir, !!def.recursive, relPath);
@@ -216,7 +221,7 @@ function freezeColumns(nodes: RawNode[], edges: RawEdge[]) {
 function cell(c: unknown, l: unknown): { c: number; l: number } {
   const cc = Math.round(Number(c));
   const ll = Math.round(Number(l) * 2) / 2;
-  if (!Number.isFinite(cc) || !Number.isFinite(ll) || cc < 0 || cc > 60 || ll < 0 || ll > 40) fail('Position hors de la grille.');
+  if (!Number.isFinite(cc) || !Number.isFinite(ll) || cc < 0 || cc > 200 || ll < 0 || ll > 100) fail('Position hors de la grille.');
   return { c: cc, l: ll };
 }
 
@@ -231,6 +236,31 @@ const PROTO: Record<string, Fields> = {
   human: { type: 'human', label: 'Ta validation' },
   alert: { type: 'alert', label: 'Alerte pour toi' }
 };
+
+/** Guillemets shell (macOS/Linux) : le chemin peut contenir espaces et apostrophes. */
+const shellQuote = (p: string): string => "'" + p.replaceAll("'", "'\\''") + "'";
+
+/** Dépose un fichier sur un type de doc : lance la commande du type ({file} remplacé par le chemin,
+ * sinon ajouté en dernier argument) et crée le document du type avec la sortie de la commande. */
+export async function dropDocFile(root: string, typeId: string, filePath: string): Promise<ProjectData> {
+  const type = readDocTypes(root).find((t) => t.id === typeId);
+  const command = type?.command?.trim();
+  if (!type || !command) fail('Ce type ne définit pas de commande : tu peux en ajouter une en recréant le type.');
+  const full = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) fail('Fichier introuvable : ' + filePath);
+  if (fs.statSync(full).size > 5 * 1024 * 1024) fail('Fichier trop grand (5 Mo maximum) : ' + path.basename(full));
+  const line = command.includes('{file}') ? command.replaceAll('{file}', shellQuote(full)) : command + ' ' + shellQuote(full);
+  const out = await new Promise<{ ok: boolean; text: string }>((resolve, reject) => {
+    exec(line, { cwd: root, timeout: 60_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, text: String(stdout ?? '') + (err ? '\n' + String(stderr ?? '') : '') });
+    });
+  });
+  if (!out.ok) fail('La commande a échoué : ' + out.text.trim().slice(0, 300));
+  const text = out.text.trim();
+  if (!text) fail('La commande n\u2019a rien produit (le contenu du document est sa sortie standard).');
+  const title = path.basename(full).replace(/\.[^.]+$/, '').slice(0, 80);
+  return saveEntity(root, 'doc', null, { title, type: typeId, updated: new Date().toISOString().slice(0, 10) }, text);
+}
 
 export function workflowOp(root: string, wfId: string, op: WorkflowOp): ProjectData {
   if (!ENTITIES.workflow.idPattern?.test(wfId)) fail('Workflow inconnu.');
@@ -428,7 +458,7 @@ export function applySplit(root: string, featId: string, proposal: SplitProposal
 
 
 /** Demande à Claude une nouvelle version d'un document, d'après ses tickets liés et la consigne. Ne modifie rien. */
-export async function proposeDocUpdate(root: string, docPath: string, instruction: string, ticketsFile?: string, model?: string): Promise<{ body: string; linked: string[] }> {
+export async function proposeDocUpdate(root: string, docPath: string, instruction: string, ticketsFile?: string, model?: string, format?: string): Promise<{ body: string; linked: string[] }> {
   const d = loadProject(root);
   const doc = d.docs.find((x) => x.path === docPath) ?? fail('Document introuvable : ' + docPath);
   const jira = loadTickets(root, ticketsFile).tickets.filter((t) => (t.docs ?? []).includes(docPath));
@@ -438,11 +468,14 @@ export async function proposeDocUpdate(root: string, docPath: string, instructio
     ...own.map((t) => `- ${t.id} : ${t.title}`),
     ...jira.map((t) => `- ${t.key} (${t.status ?? '?'}) : ${t.summary}${t.description ? ' | ' + t.description.slice(0, 600) : ''}`)
   ].slice(0, 60);
-  const ask = instruction.trim().slice(0, 2000) || 'Mets le document à jour d\'après les tickets liés.';
+  const ask = instruction.trim().slice(0, 2000) || 'Vérifie que le document est à jour et corrige-le.';
   const prompt = [
-    'Tu mets à jour un document markdown du projet. Garde son ton, sa structure et ce qui reste vrai. Ne change que ce que la consigne ou les tickets justifient. N\'invente rien.',
+    'Tu mets à jour un document markdown du projet d\'après son code réel.',
+    'Commence par parcourir le code source du projet (outils Read, Glob et Grep : lecture seule, accordés sans confirmation) pour vérifier ce que le document affirme : fichiers, commandes, structure, comportements, exemples.',
+    'Corrige ce qui ne correspond plus au code, complète ce qui manque, retire ce qui n\'existe plus. Garde le ton, la structure et ce qui reste vrai. Ne change que ce que la consigne, les tickets ou le code justifient. N\'invente rien.',
     `Document : ${doc.title} (${doc.path})`,
     `Consigne : ${ask}`,
+    format ? `Format attendu :\n${format.slice(0, 2000)}\n\nSuis ce format pour la structure du document.` : '',
     lines.length ? `Tickets liés :\n${lines.join('\n')}` : 'Aucun ticket lié.',
     `Contenu actuel :\n<<<\n${doc.body.slice(0, 40000)}\n>>>`,
     'Réponds uniquement avec le markdown complet de la nouvelle version, sans commentaire ni bloc de code autour.'

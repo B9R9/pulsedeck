@@ -1,6 +1,6 @@
-# Claude UI
+# PulseDeck
 
-Application de bureau (Electron + Quasar + Vue 3 + TypeScript) pour piloter Claude Code avec une interface graphique.
+Application de bureau (Electron + Quasar + Vue 3 + TypeScript) pour orchestrer et gouverner les agents de développement IA (moteur de workflows Operon & gouvernance Aegis).
 La maquette de référence est l'artifact « Maquette interface Claude Code » (un fichier par mode).
 
 ## Règles

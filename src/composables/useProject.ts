@@ -3,6 +3,7 @@ import type { ProjectData, SplitProposal, WorkflowOp } from '../shared/types';
 
 const data = ref<ProjectData | null>(null);
 const loading = ref(false);
+let unsubscribe: (() => void) | undefined;
 
 async function load() {
   loading.value = true;
@@ -20,8 +21,11 @@ async function resolveInbox(path: string, result: '' | 'approved' | 'rejected' =
 async function importDriveDoc(url: string) {
   data.value = await window.api.importDriveDoc(url);
 }
-async function saveEntity(kind: string, path: string | null, fields: Record<string, unknown>, body?: string) {
-  data.value = await window.api.saveEntity(kind, path, fields, body);
+async function saveEntity(kind: string, path: string | null, fields: Record<string, unknown>, body?: string, emptyStart?: boolean) {
+  data.value = await window.api.saveEntity(kind, path, fields, body, emptyStart);
+}
+async function addDocType(label: string, command?: string) {
+  data.value = await window.api.addDocType(label, command);
 }
 async function deleteEntity(kind: string, path: string) {
   data.value = await window.api.deleteEntity(kind, path);
@@ -89,6 +93,8 @@ async function setWorkspace(root: string) {
 
 export function useProject() {
   if (!data.value && !loading.value) void load();
+  // La documentation suit le dossier docs/ du projet : chaque modification externe repousse les données.
+  if (!unsubscribe) unsubscribe = window.api.onDocsChanged((next) => { data.value = next; });
   return {
     data,
     loading,
@@ -98,6 +104,7 @@ export function useProject() {
     resolveInbox,
     importDriveDoc,
     saveEntity,
+    addDocType,
     deleteEntity,
     workflowOp,
     decideSession,

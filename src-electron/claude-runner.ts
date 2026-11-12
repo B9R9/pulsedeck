@@ -1,8 +1,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { LOCAL_MODELS } from './models';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import type { McpCall, RunEvent } from '../src/shared/types';
-import { appendFollowUp, readClaudeSessionId, writeSessionFile } from './project-store';
+import { appendFollowUp, readClaudeSessionId, readClaudeSessionModel, writeSessionFile } from './project-store';
 import { runWorkflow } from './workflow-engine';
 import { refreshStats } from './stats';
 import { bgEvents } from './units';
@@ -62,6 +63,10 @@ export interface AgentOptions {
 }
 export interface AgentResult { ok: boolean; text: string; tokens: number; costUsd: number; actions: number; sessionId: string; error: string }
 
+/** Les modèles locaux d'Ollama (étiquette avec deux-points) sont servis par l'API compatible Anthropic d'Ollama, pas par l'API Anthropic. */
+const OLLAMA_ENV = { ANTHROPIC_BASE_URL: 'http://localhost:11434', ANTHROPIC_AUTH_TOKEN: 'ollama' };
+const isLocalModel = (name: string | undefined): boolean => !!name && (name.includes(':') || LOCAL_MODELS.includes(name));
+
 export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   const run = running.get(o.runId);
   const result: AgentResult = { ok: false, text: '', tokens: 0, costUsd: 0, actions: 0, sessionId: '', error: '' };
@@ -90,6 +95,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   };
 
   try {
+    const model = o.model || defaultModel;
     const stream = query({
       prompt: o.prompt,
       options: {
@@ -101,7 +107,8 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         abortController: run.abort,
         settingSources: ['project'],
         maxTurns: MAX_TURNS,
-        ...((o.model || defaultModel) ? { model: o.model || defaultModel } : {}),
+        ...(model ? { model } : {}),
+        ...(isLocalModel(model) ? { env: { ...process.env, ...OLLAMA_ENV } } : {}),
         ...(o.resume ? { resume: o.resume } : {})
       }
     });
@@ -151,7 +158,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
 
 export function startRun(
   prompt: string, cwd: string, root: string, emit: (event: RunEvent) => void,
-  options: { followUp?: string; workflow?: string; route?: { confidence: number; text: string } } = {}
+  options: { followUp?: string; workflow?: string; route?: { confidence: number; text: string }; model?: string } = {}
 ): string {
   const runId = randomUUID();
   const abort = new AbortController();
@@ -166,12 +173,14 @@ export function startRun(
       }
       const resume = options.followUp ? readClaudeSessionId(root, options.followUp) : '';
       if (options.followUp && !resume) throw new Error("Cette session n'a pas d'identifiant Claude : elle ne peut pas être poursuivie.");
-      const r = await runAgent({ runId, prompt, cwd, tools: ['Edit', 'Write', 'Bash'], resume, emit });
+      const existingModel = options.followUp ? readClaudeSessionModel(root, options.followUp) : '';
+      const model = options.model || existingModel || defaultModel;
+      const r = await runAgent({ runId, prompt, cwd, tools: ['Edit', 'Write', 'Bash'], resume, emit, model });
       if (!r.ok) {
         emit({ runId, kind: 'error', message: r.error || 'La session a échoué.' });
         return;
       }
-      const summary = { prompt, answer: r.text, cwd, tokens: r.tokens, durationMs: Date.now() - started, actions: r.actions, claudeSessionId: r.sessionId, route: options.route };
+      const summary = { prompt, answer: r.text, cwd, tokens: r.tokens, durationMs: Date.now() - started, actions: r.actions, claudeSessionId: r.sessionId, route: options.route, model };
       const file = options.followUp ? appendFollowUp(root, options.followUp, summary) : writeSessionFile(root, summary);
       refreshStats(root);
       bgEvents.emit('session');

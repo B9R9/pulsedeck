@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "project-options-plugin",
+  "version": "1.0.0",
+  "description": "Gestion des options de projet et des modèles locaux pour Vibe",
+  "author": {
+    "name": "Mistral Vibe",
+    "email": "vibe@mistral.ai"
+  },
+  "homepage": "https://mistral.ai",
+  "license": "MIT",
+  "keywords": ["project", "options", "local-models"],
+  "extensions": {
+    "ai.mistral.vibe": {
+      "schemaVersion": 1,
+      "displayName": "Project Options Plugin",
+      "toolNamespace": "projectOptions"
+    }
+  }
+}

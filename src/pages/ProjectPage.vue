@@ -59,7 +59,7 @@
                 <span class="mono id">{{ f.id }}</span>
                 <span class="title">{{ f.title }}</span>
                 <span class="count">{{ f.done }} sur {{ f.pulses.length }} pulses</span>
-                <button class="btn small" :disabled="splitting === f.id" @click="doSplit(f)">{{ splitting === f.id ? 'Claude réfléchit…' : 'Découper avec l\'IA' }}</button>
+                <button class="btn small" :disabled="splitting === f.id" @click="doSplit(f)">{{ splitting === f.id ? 'Le modèle réfléchit…' : 'Découper avec l\'IA' }}</button>
                 <span class="icons">
                   <button class="ic" :aria-label="'Modifier ' + f.title" title="Modifier" @click="openFeat(f)"><svg v-bind="ICON"><path :d="PEN" /></svg></button>
                   <button class="ic del" :aria-label="'Supprimer ' + f.title" title="Supprimer" @click="askDelete('feat', f.file, f.title)"><svg v-bind="ICON"><path :d="TRASH" /></svg></button>

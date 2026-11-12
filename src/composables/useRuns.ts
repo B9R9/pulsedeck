@@ -1,6 +1,7 @@
 import { computed, reactive, ref } from 'vue';
 import type { PendingAsk, RunEvent, Session, TreeEdge, TreeNode } from '../shared/types';
 import { useProject } from './useProject';
+import { useSettings } from './useSettings';
 
 interface LiveRun {
   id: string;
@@ -15,6 +16,8 @@ interface LiveRun {
   followUp: string;
   label: string;
   workflow: string;
+  /** Modèle demandé pour ce run, vide pour le défaut. */
+  model: string;
   nodes: TreeNode[];
   edges: TreeEdge[];
   asks: PendingAsk[];
@@ -28,7 +31,7 @@ let subscribed = false;
 const ensure = (id: string): LiveRun => {
   let run = runs.find((r) => r.id === id);
   if (!run) {
-    run = { id, prompt: '', status: 'run', texts: [], tools: [], denied: [], startedAt: Date.now(), error: '', followUp: '', label: '', workflow: '', nodes: [], edges: [], asks: [] };
+    run = { id, prompt: '', status: 'run', texts: [], tools: [], denied: [], startedAt: Date.now(), error: '', followUp: '', label: '', workflow: '', model: '', nodes: [], edges: [], asks: [] };
     runs.push(run);
   }
   return run;
@@ -62,17 +65,20 @@ function subscribe(reload: () => Promise<void>) {
 }
 
 function toSession(r: LiveRun): Session {
+  const { getModelLabel, activeModel } = useSettings();
   const failed = r.status === 'error';
   const last = r.texts[r.texts.length - 1] ?? '';
   const firstLine = last.split('\n').find((l) => l.trim()) ?? '';
   const seconds = Math.max(1, Math.round((Date.now() - r.startedAt) / 1000));
+  const chosen = r.model || activeModel.value;
+  const name = getModelLabel(chosen);
   return {
     path: '', id: 'live-' + r.id, name: r.label || r.workflow || r.prompt.split(/\s+/).slice(0, 4).join(' ') || 'Session en cours', branch: '', status: failed ? 'done' : r.asks.length ? 'wait' : 'run',
     task: r.prompt.slice(0, 60), tokens: '…', elapsed: seconds + ' s', ask: r.prompt,
     actions: r.tools.length + (r.tools.length > 1 ? ' actions' : ' action'),
-    workflow: r.workflow || 'Libre', workflowVersion: '', confidence: 0, route: r.workflow ? 'workflow lancé à la main' : 'lancée à la main, chaque modification demande ton accord',
+    workflow: r.workflow || 'Libre', model: chosen, workflowVersion: '', confidence: 0, route: r.workflow ? 'workflow lancé à la main' : 'lancée à la main, chaque modification demande ton accord',
     recapLabel: failed ? 'Erreur' : 'Récap en cours',
-    recapTitle: failed ? r.error : firstLine.slice(0, 140) || 'Claude lit le projet…',
+    recapTitle: failed ? r.error : firstLine.slice(0, 140) || `${name} lit le projet…`,
     recap: [...r.tools.slice(-5), ...r.denied.map((d) => `Refusé : ${d} (lecture seule)`)],
     recapNote: 'Le récap sera écrit dans sessions/ à la fin de la session', decision: '', primary: '', secondary: '',
     nodes: r.nodes.length ? r.nodes : [
@@ -93,12 +99,15 @@ export function useRuns() {
     /** Pour une session en direct qui poursuit une session existante : le chemin de celle-ci, sinon vide. */
     followOf: (liveId: string) => runs.find((r) => 'live-' + r.id === liveId)?.followUp ?? '',
     running: computed(() => runs.filter((r) => r.status === 'run').map((r) => ({ id: r.id, prompt: r.prompt }))),
-    async start(prompt: string, followUp = '', label = '', workflow = '', route?: { confidence: number; text: string }): Promise<string> {
-      const id = await window.api.startRun(prompt, followUp || undefined, workflow || undefined, route);
+    async start(prompt: string, followUp = '', label = '', workflow = '', route?: { confidence: number; text: string }, model?: string): Promise<string> {
+      const { activeModel } = useSettings();
+      const chosen = model !== undefined ? model : activeModel.value;
+      const id = await window.api.startRun(prompt, followUp || undefined, workflow || undefined, route, chosen);
       const run = ensure(id);
       run.prompt = prompt;
       run.followUp = followUp;
       run.label = label;
+      run.model = chosen;
       return 'live-' + id;
     },
     answer: (liveId: string, askId: string, allow: boolean) => window.api.answerAsk(liveId.replace(/^live-/, ''), askId, allow),

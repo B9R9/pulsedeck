@@ -10,7 +10,7 @@ import ArchVersions from '../components/ArchVersions.vue';
 import { useProject } from '../composables/useProject';
 import EntityDialog from '../components/EntityDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import { NODE_FIELDS, LOCAL_MODELS } from '../shared/entities';
+import { NODE_FIELDS, isLocalModel } from '../shared/entities';
 import type { ArchEdgeKind, ArchNode, LibraryNode, WorkflowDef } from '../shared/types';
 
 const { data, saveInstruction, saveEntity, deleteEntity, workflowOp } = useProject();
@@ -48,7 +48,53 @@ async function op(o: Parameters<typeof workflowOp>[1]) {
   if (!wf.value) return;
   opError.value = '';
   try { await workflowOp(wf.value.id, o); }
-  catch (e) { opError.value = (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']*': (Error: )?/, ''); }
+  catch (e) { showErr(e); }
+}
+function showErr(e: unknown) {
+  opError.value = (e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']*': (Error: )?/, '');
+}
+
+// --- Création par glisser-déposer quand aucun workflow n'existe ---
+const slugf = (t: string) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+const zoneOver = ref(false);
+const PAL_TYPES = ['text/arch-lib', 'text/arch-type'];
+const fromPalette = (e: DragEvent) => {
+  const types = e.dataTransfer?.types ?? [];
+  return PAL_TYPES.some((t) => types.includes(t)) || (types.length === 0 || !types.includes('Files'));
+};
+function zoneDragOver(e: DragEvent) {
+  if (!fromPalette(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  zoneOver.value = true;
+}
+/** Dépose une première étape sans workflow : crée le workflow, puis pose l'étape. */
+async function createByDrop(e: DragEvent) {
+  e.preventDefault();
+  zoneOver.value = false;
+  const dt = e.dataTransfer;
+  if (!dt) return;
+  const lib = dt.getData('text/arch-lib');
+  const type = dt.getData('text/arch-type');
+  if (!lib && !type) return;
+  const name = 'Nouveau workflow';
+  let id = slugf(name) || 'workflow';
+  let n = 2;
+  const taken = new Set(workflows.value.map((w) => w.id));
+  while (taken.has(id)) id = slugf(name) + '-' + n++;
+  opError.value = '';
+  try {
+    await saveEntity('workflow', null, { id, name, when: '' }, undefined, true);
+    wfId.value = id;
+    const w = wf.value;
+    if (w) {
+      let l = 0;
+      while (w.nodes.some((x) => Math.abs(x.l - l) < 1)) l += 1;
+      const before = new Set(w.nodes.map((x) => x.id));
+      await op({ op: 'add', libId: lib || undefined, type: (lib ? undefined : type) as 'agent' | 'script' | 'human' | 'alert' | undefined, c: 0, l });
+      sel.value = wf.value?.nodes.find((x) => !before.has(x.id))?.id ?? '';
+    }
+  } catch (e) { showErr(e); }
 }
 const INSERT: { type: 'agent' | 'script' | 'human' | 'alert'; label: string }[] = [
   { type: 'agent', label: 'Agent' }, { type: 'script', label: 'Script' }, { type: 'human', label: 'Ta validation' }, { type: 'alert', label: 'Alerte' }
@@ -90,7 +136,6 @@ const TABS = [
 const TYPE_LABEL = { agent: 'Agent', script: 'Script', human: 'Toi', alert: 'Alerte' };
 const TYPE_CLS = { agent: 'ok', script: 'blue', human: 'hint', alert: 'fail' };
 const PURPOSES = ['Général', 'Sécurité', 'Migration', 'Simple', 'Docs', 'Tests', 'Revue'];
-const LOCAL = LOCAL_MODELS;
 
 const tab = ref('graph');
 const wfId = ref('');
@@ -109,10 +154,12 @@ const linkTargets = computed(() => (wf.value?.nodes ?? []).filter((n) => n.id !=
 
 function dragLib(e: DragEvent, id: string) {
   e.dataTransfer?.setData('text/arch-lib', id);
+  e.dataTransfer?.setData('text/plain', id); // secours si les types personnalisés sont masqués
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
 }
 function dragType(e: DragEvent, type: string) {
   e.dataTransfer?.setData('text/arch-type', type);
+  e.dataTransfer?.setData('text/plain', type); // secours si les types personnalisés sont masqués
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
 }
 async function onDrop(p: { libId?: string; type?: string; nodeId?: string; c: number; l: number }) {
@@ -162,6 +209,17 @@ async function addLink() {
 const workflows = computed(() => data.value?.workflows ?? []);
 const wf = computed(() => workflows.value.find((w) => w.id === wfId.value) ?? null);
 const cur = computed<ArchNode | null>(() => wf.value?.nodes.find((n) => n.id === sel.value) ?? wf.value?.nodes[0] ?? null);
+
+// --- Profil du workflow (nom, quand l'utiliser) : éditable dans le panneau du bas ---
+const wDraft = ref({ name: '', when: '' });
+watch(wf, (w) => { if (w) wDraft.value = { name: w.name, when: w.when }; }, { immediate: true });
+const wfDirty = computed(() => !!wf.value && (wDraft.value.name !== wf.value.name || wDraft.value.when !== wf.value.when));
+async function saveWf() {
+  if (!wf.value) return;
+  opError.value = '';
+  try { await saveEntity('workflow', wf.value.path, { name: wDraft.value.name.trim() || 'Nouveau workflow', when: wDraft.value.when }); }
+  catch (e) { showErr(e); }
+}
 
 watch(workflows, (list) => {
   if (!wfId.value && list.length) pick(list[0].id);
@@ -237,7 +295,10 @@ async function saveInstr() {
       <div v-if="tab === 'graph'" class="graphwrap">
         <div class="work">
           <div class="scroll" aria-label="Grille du workflow">
-            <p v-if="!wf" class="hint">Choisis ou crée un workflow à gauche.</p>
+            <div v-if="!wf" class="dropzone" :class="{ over: zoneOver }" aria-label="Zone de création du workflow" @dragover="zoneDragOver" @dragleave="zoneOver = false" @drop="createByDrop">
+              <strong>Glisse ici une étape de la palette</strong>
+              <span class="hint2">Ça crée un nouveau workflow, configurable ensuite.</span>
+            </div>
             <ArchGraph v-else :nodes="wf.nodes" :edges="wf.edges" :selected="cur?.id ?? ''" @select="sel = $event" @drop="onDrop" @link="onLink" />
           </div>
           <aside class="palette" aria-label="Bibliothèque de nœuds">
@@ -289,7 +350,7 @@ async function saveInstr() {
           <div v-if="detailsOpen" class="dbody">
             <div class="dgrid">
       <template v-if="cur.type === 'agent'">
-        <div class="field"><span class="small">Modèle</span><span>{{ cur.model }}{{ LOCAL.includes(cur.model) ? ' (local, Ollama)' : '' }}</span></div>
+        <div class="field"><span class="small">Modèle</span><span>{{ cur.model }}{{ isLocalModel(cur.model) ? ' (local, Ollama)' : '' }}</span></div>
         <div class="field"><span class="small">Intensité</span><span>{{ cur.effort }}</span></div>
         <div class="field"><span class="small">Repli</span><span>{{ cur.fallback.length ? cur.fallback.join(' puis ') : "Aucun, le nœud s'arrête en alerte." }}</span></div>
         <div class="field"><span class="small">Usages</span><div class="chips"><span v-for="p in cur.purposes" :key="p" class="tag ok">{{ p }}</span><span v-if="!cur.purposes.length" class="sub2">Aucun</span></div></div>
@@ -323,6 +384,12 @@ async function saveInstr() {
 
             </div>
             <div class="links">
+              <span class="small">Profil du workflow</span>
+              <div class="addlink">
+                <input v-model="wDraft.name" class="lsel grow-name" aria-label="Nom du workflow" placeholder="Nom du workflow" @keydown.enter="saveWf">
+                <input v-model="wDraft.when" class="lsel grow-name" aria-label="Quand l'utiliser" placeholder="Quand l'utiliser" @keydown.enter="saveWf">
+                <button class="btn small main" :disabled="!wfDirty" title="Enregistrer le nom et la description du workflow" @click="saveWf">Enregistrer</button>
+              </div>
               <span class="small">Liens sortants</span>
               <div v-for="e in outgoing" :key="e[1]" class="edge">
                 <span class="et">vers {{ nodeLabel(e[1]) }}</span>
@@ -364,7 +431,7 @@ async function saveInstr() {
               <div class="line">
                 <strong>{{ c.label }}</strong>
                 <span class="tag" :class="TYPE_CLS[c.type]">{{ TYPE_LABEL[c.type] }}</span>
-                <span class="mono small push">{{ c.model }}{{ LOCAL.includes(c.model) ? ' · local' : ' · ' + c.effort }}</span>
+                <span class="mono small push">{{ c.model }}{{ isLocalModel(c.model) ? ' · local' : ' · ' + c.effort }}</span>
               </div>
               <div class="chips"><span v-for="p in c.purposes" :key="p" class="tag ok">{{ p }}</span><span v-if="c.isolated" class="tag">branche isolée</span></div>
               <span class="sub2">Repli : {{ c.fallback.length ? c.fallback.join(', ') : 'aucun, alerte' }}</span>
@@ -463,6 +530,8 @@ async function saveInstr() {
 .links { display: flex; flex-direction: column; gap: 8px; border-left: 1px solid var(--line); padding-left: 20px; }
 .et { font-size: 13px; }
 .addlink { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.grow-name { flex: 1 1 140px; min-width: 0; }
+.dropzone { flex: 1 1 auto; margin: 24px; border: 2px dashed var(--line-2); border-radius: 14px; display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--muted); background: var(--panel); transition: border-color .12s, background .12s; & * { pointer-events: none; } &.over { border-color: var(--clay); background: rgba(232, 132, 92, .06); color: var(--text); } }
 .lsel { height: 32px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 8px; color: var(--text); font: inherit; font-size: 12px; padding: 0 8px; }
 .page { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px 24px; }
 .stack { max-width: 960px; display: flex; flex-direction: column; gap: 16px; }

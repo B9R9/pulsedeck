@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { useProject } from '../composables/useProject';
+import { useSettings } from '../composables/useSettings';
 import AiSuggest from './AiSuggest.vue';
 import type { RouteResult } from '../shared/types';
 
-const props = defineProps<{ focused: boolean; busy: boolean; error: string; initial?: string; initialWorkflow?: string }>();
-const emit = defineEmits<{ (e: 'focus'): void; (e: 'close'): void; (e: 'send', text: string, workflow: string, route?: { confidence: number; text: string }): void }>();
+const props = defineProps<{ focused: boolean; busy: boolean; error: string; initial?: string; initialWorkflow?: string; initialModel?: string }>();
+const emit = defineEmits<{ (e: 'focus'): void; (e: 'close'): void; (e: 'send', text: string, workflow: string, route?: { confidence: number; text: string }, model?: string): void }>();
 const { data } = useProject();
+const { activeModelLabel, availableModels, getModelLabel } = useSettings();
 /** « auto » : le routeur lit le prompt et choisit. Vide : agent libre. */
 const workflow = ref(props.initialWorkflow || 'auto');
+const chosenModel = ref(props.initialModel || '');
+const currentDraftModelLabel = computed(() => (chosenModel.value ? getModelLabel(chosenModel.value) : activeModelLabel.value));
 const routing = ref(false);
 const routeError = ref('');
 const proposal = ref<RouteResult | null>(null);
@@ -21,7 +25,7 @@ onMounted(() => nextTick(() => input.value?.focus()));
 function launch(wf: string, r: RouteResult | null, how: string) {
   const t = text.value.trim();
   if (!t) return;
-  emit('send', t, wf, r ? { confidence: r.confidence, text: how } : undefined);
+  emit('send', t, wf, r ? { confidence: r.confidence, text: how } : undefined, chosenModel.value);
 }
 
 async function send() {
@@ -29,7 +33,7 @@ async function send() {
   if (!t || routing.value) return;
   routeError.value = '';
   proposal.value = null;
-  if (workflow.value !== 'auto') { emit('send', t, workflow.value); return; }
+  if (workflow.value !== 'auto') { emit('send', t, workflow.value, undefined, chosenModel.value); return; }
   routing.value = true;
   try {
     const r = await window.api.routePrompt(t);
@@ -63,13 +67,13 @@ function confirmRoute() {
       </button>
     </div>
     <div class="body">
-      <label for="draft-prompt" class="title">Que veux-tu demander à Claude ?</label>
+      <label for="draft-prompt" class="title">Que veux-tu demander à {{ currentDraftModelLabel }} ?</label>
       <div class="composer">
         <textarea
           id="draft-prompt" ref="input" v-model="text" rows="4" placeholder="Décris la tâche"
           @keydown.enter.exact.prevent="send"
         />
-        <button class="send" aria-label="Envoyer à Claude" title="Envoyer (Entrée)" :disabled="busy || routing || !text.trim()" @click="send">
+        <button class="send" :aria-label="'Envoyer à ' + currentDraftModelLabel" title="Envoyer (Entrée)" :disabled="busy || routing || !text.trim()" @click="send">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" /></svg>
         </button>
       </div>
@@ -80,7 +84,12 @@ function confirmRoute() {
         <option value="">Libre : un seul agent, tu valides chaque modification</option>
         <option v-for="w in data?.workflows ?? []" :key="w.id" :value="w.id">{{ w.name }} : {{ w.when }}</option>
       </select>
-      <span class="small">Entrée pour envoyer, Maj Entrée pour un retour à la ligne. Claude lit librement. Chaque modification ou commande te demande ton accord.</span>
+      <label for="draft-model" class="small">Modèle de la session</label>
+      <select id="draft-model" v-model="chosenModel" class="wfsel">
+        <option value="">Par défaut ({{ activeModelLabel }})</option>
+        <option v-for="m in availableModels.filter((x) => x.value)" :key="m.value" :value="m.value">{{ m.label }}</option>
+      </select>
+      <span class="small">Entrée pour envoyer, Maj Entrée pour un retour à la ligne. {{ currentDraftModelLabel }} lit librement. Chaque modification ou commande te demande ton accord.</span>
       <p v-if="routing" class="small" role="status">Le routeur lit ton prompt.</p>
       <section v-if="proposal" class="proposal" aria-label="Choix du routeur">
         <strong>{{ proposal.action === 'ask' ? 'Aucun workflow ne convient clairement' : 'Le routeur propose : ' + proposal.name }}</strong>

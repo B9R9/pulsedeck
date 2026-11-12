@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import DraftPane from '../components/DraftPane.vue';
 import SessionPane from '../components/SessionPane.vue';
 import WorkflowTree from '../components/WorkflowTree.vue';
 import { useProject } from '../composables/useProject';
 import { useRuns } from '../composables/useRuns';
+import { useSettings } from '../composables/useSettings';
 import { pendingPrompt, pendingWorkflow } from '../composables/useTickets';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { Session } from '../shared/types';
@@ -12,6 +13,8 @@ import type { Session } from '../shared/types';
 const MAX = 3;
 const { data, decideSession, deleteEntity } = useProject();
 const { liveSessions, running, start, stop, answer, finished, followOf } = useRuns();
+const { loadSettings, activeModelLabel } = useSettings();
+onMounted(() => { void loadSettings(); });
 /**
  * Un message envoyé dans une session existante la poursuit : on n'affiche qu'une seule session.
  * Pendant l'exécution, la version en direct reprend l'historique de la session d'origine et y ajoute la suite.
@@ -31,6 +34,7 @@ const sessions = computed(() => {
 const drafts = ref<string[]>([]);
 const draftText = ref<Record<string, string>>({});
 const draftWf = ref<Record<string, string>>({});
+const draftModel = ref<Record<string, string>>({});
 const sending = ref(false);
 const launchError = ref('');
 let draftN = 0;
@@ -76,10 +80,11 @@ function place(id: string, at = -1) {
 }
 
 function newDraft() { openDraft(''); }
-function openDraft(initial: string, wf = '') {
+function openDraft(initial: string, wf = '', model = '') {
   const id = 'draft-' + ++draftN;
   if (initial) draftText.value[id] = initial;
   if (wf) draftWf.value[id] = wf;
+  if (model) draftModel.value[id] = model;
   drafts.value.push(id);
   launchError.value = '';
   place(id, 0);
@@ -102,18 +107,18 @@ function dragStart(e: DragEvent, id: string) {
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
 }
 
-async function send(draftId: string, text: string, workflow = '', route?: { confidence: number; text: string }) {
+async function send(draftId: string, text: string, workflow = '', route?: { confidence: number; text: string }, model = '') {
   if (sending.value) return;
   sending.value = true;
   launchError.value = '';
   try {
-    const live = await start(text, '', '', workflow, route);
+    const live = await start(text, '', '', workflow, route, model);
     const i = open.value.indexOf(draftId);
     if (i >= 0) open.value.splice(i, 1, live);
     drafts.value = drafts.value.filter((d) => d !== draftId);
     focus.value = live;
   } catch {
-    launchError.value = "Impossible de lancer la session. Vérifie que Claude Code est installé et connecté.";
+    launchError.value = `Impossible de lancer la session avec ${activeModelLabel.value}. Vérifie que le service est disponible et connecté.`;
   } finally {
     sending.value = false;
   }
@@ -154,7 +159,7 @@ async function decide(s: Session, result: '' | 'approved' | 'rejected') {
 async function followUp(s: Session, text: string) {
   launchError.value = '';
   try {
-    const live = await start(text, s.path, s.name);
+    const live = await start(text, s.path, s.name, '', undefined, s.model);
     const i = open.value.indexOf(s.id);
     if (i >= 0) open.value.splice(i, 1, live);
     focus.value = live;
@@ -224,8 +229,8 @@ const flip = (sid: string, pid: string, dflt: boolean) => { off.value[sid + pid]
         <div v-if="!volets.length" class="dropzone">Glisse une session ici, ou clique + pour en créer une.</div>
         <div v-for="(v, i) in volets" :key="v.id" class="slotbox" @dragover.prevent @drop.prevent.stop="dropOn($event, i)">
           <DraftPane
-            v-if="v.draft" :initial="draftText[v.id]" :initial-workflow="draftWf[v.id]" :focused="focus === v.id" :busy="sending" :error="launchError"
-            @focus="focus = v.id" @close="toggle(v.id)" @send="(t, w, r) => send(v.id, t, w, r)"
+            v-if="v.draft" :initial="draftText[v.id]" :initial-workflow="draftWf[v.id]" :initial-model="draftModel[v.id]" :focused="focus === v.id" :busy="sending" :error="launchError"
+            @focus="focus = v.id" @close="toggle(v.id)" @send="(t, w, r, m) => send(v.id, t, w, r, m)"
           />
           <SessionPane
             v-else :session="v.s!" :focused="focus === v.id"

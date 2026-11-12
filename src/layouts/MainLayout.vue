@@ -1,6 +1,10 @@
 <template>
   <q-layout view="hHh lpR fFf">
     <q-header class="bar">
+      <div class="brand-mark">
+        <img src="icon.svg" alt="PulseDeck" class="brand-icon" />
+        <span class="brand-name">PulseDeck</span>
+      </div>
       <nav class="modes" aria-label="Modes">
         <router-link v-for="m in modes" :key="m.to" :to="m.to" class="mode" active-class="" exact-active-class="sel">
           {{ m.label }}
@@ -16,16 +20,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useProject } from '../composables/useProject';
+import { useSettings } from '../composables/useSettings';
 
 const { data, waiting } = useProject();
+const { loadSettings } = useSettings();
+onMounted(() => { void loadSettings(); });
 
 const modes = [
   { to: '/', label: 'Développement' },
   { to: '/architecture', label: 'Architecture' },
   { to: '/projet', label: 'Projet' },
   { to: '/documentation', label: 'Documentation' },
+  { to: '/fichiers', label: 'Fichiers' },
   { to: '/stats', label: 'Stats' },
   { to: '/a-traiter', label: 'À traiter', badge: true },
   { to: '/options', label: 'Options' }
@@ -39,6 +47,16 @@ const rootLabel = computed(() => data.value?.root || 'Aucun dossier de projet');
   background: var(--panel); border-bottom: 1px solid var(--line); color: var(--text);
   min-height: 56px; display: flex; align-items: center; gap: 16px; padding: 6px 16px 6px 84px;
   -webkit-app-region: drag;
+}
+.brand-mark {
+  display: flex; align-items: center; gap: 8px; margin-right: 8px; user-select: none;
+  -webkit-app-region: no-drag;
+}
+.brand-icon {
+  width: 24px; height: 24px; border-radius: 6px;
+}
+.brand-name {
+  font-weight: 700; font-size: 15px; letter-spacing: -0.02em; color: var(--text);
 }
 .modes { display: flex; gap: 4px; -webkit-app-region: no-drag; }
 .mode {

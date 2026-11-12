@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { ArchEdge, ArchNode } from '../shared/types';
-import { LOCAL_MODELS } from '../shared/entities';
+import { isLocalModel } from '../shared/entities';
 
 /**
  * Grille du workflow. Une case fait CX par ROW pixels ; un nœud occupe une colonne et deux demi-lignes.
@@ -15,19 +15,21 @@ const emit = defineEmits<{
   (e: 'link', from: string, to: string): void;
 }>();
 
-const W = 128;
-const H = 72;
-const CX = 164;
-const LANE = 92;
+const W = 176;
+const H = 100;
+const CX = 224;
+const LANE = 124;
 const ROW = LANE / 2;
 const PAD = 24;
+// Marge généreuse et jamais vraiment consommée : ~40 colonnes et 25 lignes scrolables au-delà du dernier nœud.
+const SPARE_C = 40;
+const SPARE_L = 25;
 
 const KIND = {
   ok: { stroke: '#86efac', dash: 'none', label: 'succès' },
   fail: { stroke: '#fca5a5', dash: '6 4', label: 'échec' },
   blocked: { stroke: '#fcd34d', dash: '2 4', label: 'bloqué' }
 };
-const LOCAL = LOCAL_MODELS;
 
 /** Colonne de repli pour les anciens fichiers sans colonne : la profondeur dans le graphe. */
 const depthOf = computed(() => {
@@ -54,7 +56,7 @@ const placed = computed(() => props.nodes.map((n) => {
   if (n.docs.length) parts.push(n.docs.length + (n.docs.length > 1 ? ' docs' : ' doc'));
   let sub = '';
   let meta = parts.length ? parts.join(' · ') : n.retries + (n.retries > 1 ? ' essais' : ' essai');
-  if (n.type === 'agent') sub = n.model + (LOCAL.includes(n.model) ? ' · local' : ' · ' + n.effort);
+  if (n.type === 'agent') sub = n.model + (isLocalModel(n.model) ? ' · local' : ' · ' + n.effort);
   if (n.type === 'script') sub = n.command;
   if (n.type === 'human') { sub = "point d'arrêt"; meta = ''; }
   if (n.type === 'alert') { sub = "prévient l'app"; meta = 'notification'; }
@@ -89,8 +91,8 @@ const links = computed(() => {
 const maxC = computed(() => Math.max(0, ...placed.value.map((n) => n.c)));
 const maxL = computed(() => Math.max(0, ...placed.value.map((n) => n.l)));
 // Toujours quelques colonnes et lignes libres à droite et en bas pour déposer.
-const width = computed(() => PAD * 2 + (maxC.value + 4) * CX);
-const height = computed(() => PAD * 2 + (maxL.value + 3) * LANE);
+const width = computed(() => PAD * 2 + (maxC.value + SPARE_C) * CX);
+const height = computed(() => PAD * 2 + (maxL.value + SPARE_L) * LANE);
 
 const board = ref<HTMLElement | null>(null);
 const ghost = ref<{ c: number; l: number; ok: boolean } | null>(null);
@@ -113,40 +115,53 @@ function nodeDragStart(e: DragEvent, id: string) {
   grab = { x: e.clientX - r.left, y: e.clientY - r.top };
   moving = id;
   e.dataTransfer?.setData('text/arch-node', id);
+  // text/plain en secours : certaines versions d'Electron masquent les types
+  // personnalisés pendant le survol et ignoreraient sinon tout le drop.
+  e.dataTransfer?.setData('text/plain', id);
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
 }
 function handleDragStart(e: DragEvent, id: string) {
   e.stopPropagation();
   linking.value = id;
   e.dataTransfer?.setData('text/arch-link', id);
+  e.dataTransfer?.setData('text/plain', id);
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'link';
 }
 function dragEnd() { ghost.value = null; linking.value = ''; moving = ''; }
 
+const ARCH_TYPES = ['text/arch-lib', 'text/arch-type', 'text/arch-node'];
 const accepts = (e: DragEvent) => {
   const types = e.dataTransfer?.types ?? [];
-  return types.includes('text/arch-lib') || types.includes('text/arch-type') || types.includes('text/arch-node');
+  if (ARCH_TYPES.some((t) => types.includes(t))) return true;
+  // Types invisibles (bug d'Electron) : on accepte sauf si c'est un fichier externe.
+  return types.length === 0 || !types.includes('Files');
 };
 
 function over(e: DragEvent) {
   if (linking.value || !accepts(e)) return;
   e.preventDefault();
-  const fromBoard = (e.dataTransfer?.types ?? []).includes('text/arch-node');
+  if (e.dataTransfer) e.dataTransfer.dropEffect = moving ? 'move' : 'copy';
+  const fromBoard = !!moving;
   const pos = toCell(e, fromBoard ? grab : undefined);
   ghost.value = { ...pos, ok: free(pos, fromBoard ? moving : '') };
 }
 function drop(e: DragEvent) {
   e.preventDefault();
   const dt = e.dataTransfer;
-  const g = ghost.value;
+  const cached = ghost.value;
   ghost.value = null;
-  if (!dt || !g || !g.ok) return;
+  if (!dt) return;
   const node = dt.getData('text/arch-node');
   const lib = dt.getData('text/arch-lib');
   const type = dt.getData('text/arch-type');
-  if (node) emit('drop', { nodeId: node, c: g.c, l: g.l });
-  else if (lib) emit('drop', { libId: lib, c: g.c, l: g.l });
-  else if (type) emit('drop', { type, c: g.c, l: g.l });
+  if (!node && !lib && !type) return;
+  // Fantôme absent (types masqués pendant le survol) : on calcule la case au drop.
+  const pos = cached ?? { ...toCell(e, { x: W / 2, y: H / 2 }), ok: true };
+  // Une case occupée n'est plus ignorée en silence : le backend renvoie l'erreur,
+  // affichée sous la grille.
+  if (node) emit('drop', { nodeId: node, c: pos.c, l: pos.l });
+  else if (lib) emit('drop', { libId: lib, c: pos.c, l: pos.l });
+  else if (type) emit('drop', { type, c: pos.c, l: pos.l });
   moving = '';
 }
 function linkOver(e: DragEvent, id: string) {
@@ -209,15 +224,15 @@ function linkDrop(e: DragEvent, id: string) {
   background-image:
     linear-gradient(to right, rgba(255, 255, 255, .045) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(255, 255, 255, .045) 1px, transparent 1px);
-  background-size: 164px 46px;
+  background-size: 224px 62px;
 }
 .wires { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.ghost { position: absolute; width: 128px; height: 72px; box-sizing: border-box; border-radius: 10px; border: 2px dashed var(--clay); background: rgba(232, 132, 92, .08); pointer-events: none;
+.ghost { position: absolute; width: 176px; height: 100px; box-sizing: border-box; border-radius: 10px; border: 2px dashed var(--clay); background: rgba(232, 132, 92, .08); pointer-events: none;
   &.bad { border-color: var(--fail); background: rgba(252, 165, 165, .08); } }
-.nodewrap { position: absolute; width: 128px; height: 72px; }
+.nodewrap { position: absolute; width: 176px; height: 100px; }
 .node {
-  position: absolute; inset: 0; box-sizing: border-box; padding: 8px 10px; border-radius: 10px; background: var(--panel);
-  border: 1.5px solid #4a4a53; display: flex; flex-direction: column; gap: 2px; overflow: hidden; text-align: left; color: inherit; font: inherit; cursor: grab;
+  position: absolute; inset: 0; box-sizing: border-box; padding: 10px 12px; border-radius: 10px; background: var(--panel);
+  border: 1.5px solid #4a4a53; display: flex; flex-direction: column; gap: 3px; overflow: hidden; text-align: left; color: inherit; font: inherit; cursor: grab;
   &:hover { border-color: #8c8983; }
   &:active { cursor: grabbing; }
   &.sel { box-shadow: 0 0 0 2px var(--clay); border-color: var(--clay); }
@@ -232,9 +247,9 @@ function linkDrop(e: DragEvent, id: string) {
 }
 .nodewrap:hover .handle, .node.sel + .handle, .linking .handle { opacity: 1; }
 .handle:hover { border-color: #86efac; background: #12261a; }
-.label { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sub { font-size: 11px; color: #c9c6bf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.meta { font-size: 11px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.label { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: 12px; color: #c9c6bf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta { font-size: 12px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .elabel { position: absolute; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--bg); border: 1px solid #4a4a53; white-space: nowrap; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .handle { transition: none; } }
 </style>

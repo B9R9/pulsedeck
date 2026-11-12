@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useProject } from '../composables/useProject';
-import { LOCAL_MODELS } from '../shared/entities';
+import { isLocalModel } from '../shared/entities';
 
 defineEmits<{ (e: 'open', id: string): void }>();
 const { data, patchFile } = useProject();
@@ -12,14 +12,13 @@ const settings = computed(() => data.value?.archSettings);
 const workflows = computed(() => data.value?.workflows ?? []);
 const CONFIRM = [['always', 'Toujours'], ['under', 'Sous 80 % de confiance'], ['never', 'Jamais']] as const;
 const NOMATCH = [['plan', 'Plan libre'], ['free', 'Agent libre'], ['ask', 'Me demander']] as const;
-const LOCAL = LOCAL_MODELS;
 
 const current = computed(() => settings.value?.samples[sample.value] ?? null);
 const color = (c: number) => (c >= 90 ? '#4ade80' : c >= 75 ? '#fbbf24' : '#fca5a5');
 const planRows = computed(() => (current.value?.picks ?? []).map(([purpose, libId]) => {
   const node = data.value?.library.find((l) => l.path === `library/${libId}.md`);
   const models = node ? [node.model, ...node.fallback] : [];
-  return { purpose, node: node?.label ?? libId, models: models.join(', puis '), local: models.some((m) => LOCAL.includes(m)) };
+  return { purpose, node: node?.label ?? libId, models: models.join(', puis '), local: models.some((m) => isLocalModel(m)) };
 }));
 const freeAsk = computed(() => ({
   plan: 'Aucun squelette ne convient : le planificateur assemble un plan à partir de la bibliothèque et te le montre avant de lancer.',

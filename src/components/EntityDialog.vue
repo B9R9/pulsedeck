@@ -25,8 +25,12 @@
               <q-select
                 v-else-if="f.type === 'list'" v-model="form[f.key] as string[]" :options="listOptions(f)" :label="label(f)"
                 multiple use-chips use-input new-value-mode="add-unique" :hide-dropdown-icon="!f.suggest && !f.suggestFrom" input-debounce="0"
+                :option-value="isModelList(f) ? 'id' : undefined" :option-label="isModelList(f) ? 'label' : undefined"
+                :emit-value="isModelList(f)" :map-options="isModelList(f)"
                 outlined dark dense options-dense :hint="f.hint" popup-content-class="dlg-menu"
-              />
+              >
+                <template v-if="isModelList(f)" #selected-item="s">{{ s.opt.label }}</template>
+              </q-select>
               <q-input
                 v-else-if="f.type === 'text'" v-model="form[f.key] as string" :label="label(f)" type="textarea"
                 autogrow outlined dark :hint="f.hint"
@@ -153,13 +157,26 @@ function contextFor(key: string): Record<string, string> {
 
 const label = (f: FieldDef) => f.label + (f.required ? ' *' : '');
 
-/** Les choix d'un champ enum : la liste du champ enrichie des modèles locaux utilisés (nom affiché choisi dans les options). */
+/** Libellé court d'un modèle local : nom sans préfixe ni quantification, avec la taille si elle distingue (`gpt-oss·20b`). */
+function localLabel(m: LocalModel): string {
+  const tag = m.id.startsWith(m.label + ':') ? m.id.slice(m.label.length + 1) : '';
+  return tag ? m.label + '·' + tag : m.label;
+}
+
+/** Les choix d'un champ enum : la liste du champ enrichie des types de doc du projet ou des modèles
+ * locaux détectés (Ollama), puis de la valeur enregistrée si elle n'existe plus — pour qu'elle reste affichée et enregistrable. */
 function enumOptions(f: FieldDef): Opt[] {
-  if (f.key !== 'model' && f.key !== 'fallback') return f.options ?? [];
-  const base = f.options ?? [];
-  if (f.key === 'model' && !f.onlyFor?.length) return base; // nœud non agent : aucun modèle
+  const docType = props.kind === 'doc' && f.key === 'type';
+  if (f.key !== 'model' && f.key !== 'fallback' && !docType) return f.options ?? [];
+  let base = f.options ?? [];
+  if (docType) base = [...base, ...(data.value?.customTypes ?? []).map((t) => ({ value: t.id, label: t.label }))];
+  const out = [...base];
   const known = new Set(base.map((o) => o.value));
-  return [...base, ...ollama.value.filter((m) => !known.has(m.id)).map((m) => ({ value: m.id, label: m.label + ' (local)' }))];
+  if (!docType) for (const m of ollama.value) if (!known.has(m.id)) out.push({ value: m.id, label: localLabel(m) + ' (local)' });
+  for (const m of ollama.value) if (!known.has(m.id)) out.push({ value: m.id, label: localLabel(m) + ' (local)' });
+  const cur = String(form.value[f.key] ?? '');
+  if (cur && !out.some((o) => o.value === cur)) out.unshift({ value: cur, label: cur });
+  return out;
 }
 
 const idDef = computed(() => allFields.value.find((f) => f.key === 'id'));
@@ -193,10 +210,17 @@ function init() {
   text.value = props.body ?? '';
 }
 
-function listOptions(f: FieldDef): string[] {
+function listOptions(f: FieldDef): string[] | { id: string; label: string }[] {
   if (f.suggestFrom === 'doc') return (data.value?.docs ?? []).map((d) => d.path);
+  // Modèles de repli : noms raccourcis, uniquement les modèles existants (locaux actifs d'Ollama).
+  if (f.key === 'fallback') {
+    const base: { id: string; label: string }[] = (f.suggest ?? []).map((m) => ({ id: m, label: m }));
+    const known = new Set(base.map((o) => o.id));
+    return [...base, ...ollama.value.filter((m) => !known.has(m.id)).map((m) => ({ id: m.id, label: localLabel(m) }))];
+  }
   return f.suggest ?? [];
 }
+const isModelList = (f: FieldDef) => f.key === 'fallback';
 
 function refOptions(f: FieldDef) {
   const d = data.value;
@@ -228,7 +252,9 @@ async function submit() {
   error.value = '';
   // On n'envoie que les champs visibles : un champ caché par le type ne doit pas écraser une valeur.
   const keys = new Set(visible.value.map((f) => f.key));
-  const fields = Object.fromEntries(Object.entries(form.value).filter(([k]) => keys.has(k)));
+  // JSON aplatit les proxys réactifs de Vue : Electron refuse de cloner des Proxies sur l'IPC
+  // (« An object could not be cloned ») dès qu'un champ liste est rempli.
+  const fields = JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(form.value).filter(([k]) => keys.has(k)))));
   try {
     if (props.submitFn) await props.submitFn(fields);
     else await saveEntity(props.kind as EntityKind, props.path, fields, def.value.body ? text.value : undefined);

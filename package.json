@@ -1,8 +1,8 @@
 {
-  "name": "claude-ui",
+  "name": "pulsedeck",
   "version": "0.1.0",
-  "description": "Interface graphique pour piloter Claude Code",
-  "productName": "Claude UI",
+  "description": "Studio de pilotage d'agents IA (moteur de workflows Operon & gouvernance Aegis)",
+  "productName": "PulseDeck",
   "private": true,
   "scripts": {
     "dev": "quasar dev -m electron",

@@ -6,16 +6,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { answerAsk, setDefaultModel, startRun, stopRun } from './claude-runner';
-import { setApprovalProvider, emptyProject, loadProject, patchFile, saveInstruction } from './project-store';
+import { setApprovalProvider, emptyProject, loadProject, patchFile, saveInstruction, watchDocs } from './project-store';
 import { resolveModel } from './models';
 import { mergeLocalModels, ollamaModels, sanitizeLocalModels, usableLocalModels } from './ollama';
 import { createTicket, deleteLocalTicket, loadTickets, resolveTicketsFile, resetTicket, saveTicket, setTicketLinks, watchTickets } from './tickets';
 import { suggestText } from './suggest';
+import { listFileTree, readProjectFile, suggestFileEdit, writeProjectFile } from './files';
 import { refreshStats } from './stats';
 import { routePrompt } from './router';
 import { recordVersion, restoreVersion } from './versions';
 import { deleteScript, saveScript } from './scripts';
-import { applySplit, decideSession, proposeDocUpdate, splitFeat, deleteEntity, importDriveDoc, resolveInboxItem, saveEntity, workflowOp } from './entities';
+import { applySplit, decideSession, dropDocFile, proposeDocUpdate, splitFeat, deleteEntity, importDriveDoc, resolveInboxItem, saveEntity, workflowOp } from './entities';
+import { addDocType } from './project-store';
+import type { FormatKind, FormatsDefaut, OutputFormat } from '../src/shared/types';
 
 nativeTheme.themeSource = 'dark';
 
@@ -24,10 +27,49 @@ let mainWindow: BrowserWindow | undefined;
 
 const configFile = () => path.join(app.getPath('userData'), 'workspace.json');
 
-interface Config { root?: string; ticketsFile?: string; model?: string; modelProjets?: string; modelDocs?: string; projects?: string[]; localModels?: unknown }
+interface Config { root?: string; ticketsFile?: string; model?: string; modelProjets?: string; modelDocs?: string; projects?: string[]; localModels?: unknown; formats?: unknown; formatsDefaut?: unknown }
 /** Valeurs libres : '', un alias court (sonnet...) et tout modèle local d'Ollama (contient un deux-points). */
 const validModel = (v: unknown): v is string => typeof v === 'string' && (v === '' || /^[a-z]{3,6}$/.test(v) || v.includes(':')) && v.length <= 100;
 const MAX_PROJECTS = 8;
+
+const FORMAT_KINDS: FormatKind[] = ['recap', 'document', 'reponse'];
+const MAX_FORMATS = 24;
+
+/** Formats de sortie valides : identifiant, nom, type connu, consigne de 4000 caractères au plus. */
+function sanitizeFormats(v: unknown): OutputFormat[] {
+  if (!Array.isArray(v)) return [];
+  return v.slice(0, MAX_FORMATS).map((f) => {
+    const o = (f ?? {}) as Partial<OutputFormat>;
+    return {
+      id: typeof o.id === 'string' ? o.id.slice(0, 40) : '',
+      label: String(o.label ?? '').trim().slice(0, 60),
+      kind: FORMAT_KINDS.includes(o.kind as FormatKind) ? (o.kind as FormatKind) : 'reponse',
+      text: String(o.text ?? '').replace(/\r/g, '').trim().slice(0, 4000)
+    };
+  }).filter((f) => f.id && f.label && f.text);
+}
+
+function sanitizeFormatsDefaut(v: unknown, formats: OutputFormat[]): FormatsDefaut {
+  const ids = formats.map((f) => f.id);
+  const src = (v ?? {}) as FormatsDefaut;
+  const out: FormatsDefaut = {};
+  for (const k of FORMAT_KINDS) if (src[k] && ids.includes(src[k]!)) out[k] = src[k]!;
+  return out;
+}
+
+/** Texte du format par défaut d'un type d'écrit, ou '' si aucun n'est choisi. */
+function formatOf(kind: FormatKind): string {
+  const formats = sanitizeFormats(readConfig().formats);
+  const id = sanitizeFormatsDefaut(readConfig().formatsDefaut, formats)[kind];
+  return formats.find((f) => f.id === id)?.text ?? '';
+}
+
+/** Format à appliquer à une suggestion, d'après la nature de l'objet et le champ rempli. */
+function formatForRequest(kind: string, field: string): string {
+  if (kind === 'doc' && field === 'body') return formatOf('document');
+  if (kind === 'draft') return formatOf('reponse');
+  return '';
+}
 
 function readConfig(): Config {
   try {
@@ -50,6 +92,7 @@ async function settings() {
   const cfg = readConfig();
   const root = readRoot() ?? '';
   const found = resolveTicketsFile(root, cfg.ticketsFile);
+  const formats = sanitizeFormats(cfg.formats);
   return {
     root,
     projects: [root, ...(cfg.projects ?? [])].filter((p, i, a) => p !== '' && a.indexOf(p) === i),
@@ -60,12 +103,25 @@ async function settings() {
     modelProjets: cfg.modelProjets ?? '',
     modelDocs: cfg.modelDocs ?? '',
     localModels: mergeLocalModels(sanitizeLocalModels(cfg.localModels), await ollamaModels()),
+    formats,
+    formatsDefaut: sanitizeFormatsDefaut(cfg.formatsDefaut, formats),
     dataDir: app.getPath('userData'),
     version: app.getVersion()
   };
 }
 
 let stopWatch: (() => void) | undefined;
+let stopDocsWatch: (() => void) | undefined;
+
+/** (Re)démarre la surveillance de `docs/` du projet en cours et pousse les données à chaque changement externe. */
+function startDocsWatch() {
+  const root = readRoot();
+  stopDocsWatch?.();
+  stopDocsWatch = root ? watchDocs(root, () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('docs:changed', loadProject(root));
+  }) : undefined;
+}
+
 function readTickets() {
   const root = readRoot() ?? '';
   const data = loadTickets(root, readConfig().ticketsFile);
@@ -99,6 +155,7 @@ function registerIpc() {
   ipcMain.handle('project:load', () => {
     const root = readRoot();
     if (root) refreshStats(root);
+    startDocsWatch();
     return root ? loadProject(root) : emptyProject('');
   });
 
@@ -113,6 +170,7 @@ function registerIpc() {
     writeConfig({ root });
     registerProject(root);
     pushTickets();
+    startDocsWatch();
     return loadProject(root);
   });
 
@@ -123,6 +181,7 @@ function registerIpc() {
     writeConfig({ root });
     registerProject(root);
     pushTickets();
+    startDocsWatch();
     return loadProject(root);
   });
 
@@ -130,7 +189,7 @@ function registerIpc() {
 
   /** Modèles locaux utilisables (actifs) avec leur nom affiché : sert aux listes de modèles hors Options. */
   ipcMain.handle('models:ollama', async () => usableLocalModels(sanitizeLocalModels(readConfig().localModels)));
-  ipcMain.handle('settings:set', async (_e, patch: { model?: string; modelProjets?: string; modelDocs?: string; ticketsFile?: string; localModels?: unknown }) => {
+  ipcMain.handle('settings:set', async (_e, patch: { model?: string; modelProjets?: string; modelDocs?: string; ticketsFile?: string; localModels?: unknown; formats?: unknown; formatsDefaut?: unknown }) => {
     const enabled = (await usableLocalModels(sanitizeLocalModels(readConfig().localModels))).map((m) => m.id);
     const modelOk = (v: unknown): v is string =>
       typeof v === 'string' && (v === '' || /^[a-z]{3,6}$/.test(v) || enabled.includes(v)) && v.length <= 200;
@@ -142,6 +201,13 @@ function registerIpc() {
     if (modelDocs !== undefined) writeConfig({ modelDocs });
     const localModels = sanitizeLocalModels(patch?.localModels);
     if (patch?.localModels !== undefined) writeConfig({ localModels });
+    if (patch?.formats !== undefined) {
+      const formats = sanitizeFormats(patch.formats);
+      writeConfig({ formats, formatsDefaut: sanitizeFormatsDefaut(patch.formatsDefaut ?? readConfig().formatsDefaut, formats) });
+    }
+    if (patch?.formatsDefaut !== undefined) {
+      writeConfig({ formatsDefaut: sanitizeFormatsDefaut(patch.formatsDefaut, sanitizeFormats(readConfig().formats)) });
+    }
     if (typeof patch?.ticketsFile === 'string' && patch.ticketsFile === '') {
       writeConfig({ ticketsFile: '' });
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tickets:changed', readTickets());
@@ -173,7 +239,7 @@ function registerIpc() {
   ipcMain.handle('doc:aiUpdate', (_e, docPath: string, instruction: string) => {
     const root = readRoot();
     if (!root) throw new Error('Aucun dossier de projet');
-    return proposeDocUpdate(root, String(docPath), String(instruction ?? ''), readConfig().ticketsFile, resolveModel(readConfig().modelDocs));
+    return proposeDocUpdate(root, String(docPath), String(instruction ?? ''), readConfig().ticketsFile, resolveModel(readConfig().modelDocs), formatOf('document'));
   });
   ipcMain.handle('scripts:save', (_e, name: string, content: string, create: boolean) =>
     withRoot((root) => { saveScript(root, String(name), String(content), create === true); return loadProject(root); }));
@@ -201,8 +267,9 @@ function registerIpc() {
   ipcMain.handle('stats:rebuild', () => withRoot((root) => { refreshStats(root, true); return loadProject(root); }));
   ipcMain.handle('ai:suggest', (_e, req: never) => {
     const kind = String((req as { kind?: unknown })?.kind ?? '');
+    const field = String((req as { field?: unknown })?.field ?? '');
     const model = kind === 'doc' || kind === 'memory' ? resolveModel(readConfig().modelDocs) : resolveModel(readConfig().modelProjets);
-    return withRoot((root) => suggestText(root, req, model));
+    return withRoot((root) => suggestText(root, { ...(req as Record<string, unknown>), format: formatForRequest(kind, field) } as never, model));
   });
   ipcMain.handle('feat:split', (_e, featId: string) => {
     const root = readRoot();
@@ -224,22 +291,32 @@ function registerIpc() {
     return patchFile(root, String(relPath), patch);
   });
 
+  ipcMain.handle('file:tree', () => withRoot((root) => listFileTree(root)));
+  ipcMain.handle('file:read', (_e, relPath: string) => withRoot((root) => readProjectFile(root, String(relPath))));
+  ipcMain.handle('file:write', (_e, relPath: string, content: string) => withRoot((root) => { writeProjectFile(root, String(relPath), String(content ?? '')); }));
+  ipcMain.handle('file:aiEdit', (_e, req: never) => withRoot((root) =>
+    suggestFileEdit(root, req as never, resolveModel(readConfig().modelProjets))));
+
   ipcMain.handle('workflow:restore', (_e, workflow: string, version: string) =>
     withRoot((root) => { restoreVersion(root, String(workflow), String(version)); return loadProject(root); }));
   ipcMain.handle('workflow:snapshot', (_e, workflow: string) =>
     withRoot((root) => { recordVersion(root, String(workflow)); return loadProject(root); }));
   ipcMain.handle('route:prompt', (_e, prompt: string) => withRoot((root) => routePrompt(root, String(prompt))));
 
-  ipcMain.handle('run:start', (event, prompt: string, followUp?: string, workflow?: string, route?: { confidence?: unknown; text?: unknown }) => {
+  ipcMain.handle('run:start', (event, prompt: string, followUp?: string, workflow?: string, route?: { confidence?: unknown; text?: unknown }, model?: string) => {
     const root = readRoot();
     if (!root) throw new Error('Aucun dossier de projet');
-    const text = String(prompt).trim();
+    // Le format de récap ne s'applique qu'aux sessions libres : les agents d'un workflow gardent leur consigne.
+    const recap = formatOf('recap');
+    const text = !workflow && recap ? String(prompt).trim() + '\n\nStructure attendue de la note de session écrite dans sessions/ :\n' + recap : String(prompt).trim();
     if (!text) throw new Error('Prompt vide');
+    const chosenModel = typeof model === 'string' && model ? (resolveModel(model) ?? model) : undefined;
     return startRun(text, root, root, (ev) => {
       if (!event.sender.isDestroyed()) event.sender.send('run:event', ev);
     }, {
       followUp: followUp ? String(followUp) : undefined, workflow: workflow ? String(workflow) : undefined,
-      route: route && typeof route.text === 'string' ? { confidence: Math.max(0, Math.min(100, Number(route.confidence) || 0)), text: route.text.slice(0, 120) } : undefined
+      route: route && typeof route.text === 'string' ? { confidence: Math.max(0, Math.min(100, Number(route.confidence) || 0)), text: route.text.slice(0, 120) } : undefined,
+      model: chosenModel
     });
   });
 
@@ -260,8 +337,11 @@ function registerIpc() {
   ipcMain.handle('inbox:resolve', (_e, relPath: string, result?: string) =>
     withRoot((root) => resolveInboxItem(root, String(relPath), (result ?? '') as '' | 'approved' | 'rejected')));
   ipcMain.handle('inbox:import', (_e, url: string) => withRoot((root) => importDriveDoc(root, String(url))));
-  ipcMain.handle('entity:save', (_e, kind: string, relPath: string | null, fields: Record<string, unknown>, body?: string) =>
-    withRoot((root) => saveEntity(root, kind as never, relPath === null ? null : String(relPath), fields ?? {}, body)));
+  ipcMain.handle('entity:save', (_e, kind: string, relPath: string | null, fields: Record<string, unknown>, body?: string, emptyStart?: boolean) =>
+    withRoot((root) => saveEntity(root, kind as never, relPath === null ? null : String(relPath), fields ?? {}, body, emptyStart === true)));
+  ipcMain.handle('docs:addType', (_e, label: string, command?: string) => withRoot((root) => addDocType(root, String(label ?? ''), typeof command === 'string' ? command : undefined)));
+  ipcMain.handle('docs:dropFile', async (_e, typeId: string, filePath: string) =>
+    withRoot((root) => dropDocFile(root, String(typeId), String(filePath ?? ''))));
   ipcMain.handle('entity:delete', (_e, kind: string, relPath: string) =>
     withRoot((root) => deleteEntity(root, kind as never, String(relPath))));
   ipcMain.handle('workflow:op', (_e, wfId: string, op: never) =>
@@ -272,6 +352,8 @@ function registerIpc() {
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'PulseDeck',
+    icon: path.resolve(currentDir, 'public/icon.svg'),
     width: 1440,
     height: 900,
     minWidth: 1100,

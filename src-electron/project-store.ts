@@ -5,8 +5,9 @@ import { listScripts } from './scripts';
 import { metaOf, versionStats } from './versions';
 import { listSubagents } from './subagents';
 import { ago, taskHash } from './units';
+import { DOC_DIRS } from '../src/shared/entities';
 import type {
-  ArchEdge, ArchNode, ArchSettings, BackgroundTask, McpCall, WorkflowVersion, ArchType, CostNode, Cycle, InstructionFile, LibraryNode, WorkflowDef, DocFile, Feat, InboxItem, InboxKind, NodeState, NoteFile, PlanChoice, ProjectData, Pulse, PulseState,
+  ArchEdge, ArchNode, ArchSettings, BackgroundTask, McpCall, WorkflowVersion, ArchType, CostNode, Cycle, DocType, InstructionFile, LibraryNode, WorkflowDef, DocFile, Feat, InboxItem, InboxKind, NodeState, NoteFile, PlanChoice, ProjectData, Pulse, PulseState,
   Session, SessionStatus, StatsData, TreeEdge, TreeNode
 } from '../src/shared/types';
 
@@ -32,13 +33,77 @@ function read(file: string) {
 }
 
 const str = (v: unknown, fallback = ''): string => (v == null ? fallback : String(v));
+const fail = (message: string): never => { throw new Error(message); };
 
 /** Dit si l'utilisateur a approuvé cette tâche de fond (l'accord vit hors du projet, dans les données de l'app). */
 let approvalOf: (root: string, id: string, hash: string) => boolean = () => false;
 export function setApprovalProvider(fn: (root: string, id: string, hash: string) => boolean) { approvalOf = fn; }
 
+/** Surveille `docs/` du projet (fichiers modifiés, ajoutés ou supprimés hors de l'app). Renvoie une fonction d'arrêt. */
+export function watchDocs(root: string, onChange: () => void): () => void {
+  const dir = path.join(root, 'docs');
+  let timer: NodeJS.Timeout | undefined;
+  const fire = () => {
+    clearTimeout(timer);
+    timer = setTimeout(onChange, 400);
+  };
+  let watcher: fs.FSWatcher;
+  try {
+    watcher = fs.watch(dir, { recursive: true }, () => fire());
+    watcher.on('error', () => { /* dossier supprimé ou devenu illisible : on ne pousse plus */ });
+  } catch {
+    return () => undefined;
+  }
+  return () => {
+    clearTimeout(timer);
+    watcher.close();
+  };
+}
+
 export function emptyProject(root: string): ProjectData {
-  return { root, exists: false, cycles: [], feats: [], pulses: [], docs: [], sessions: [], inbox: [], stats: null, workflows: [], library: [], instructions: [], background: [], archSettings: defaultSettings(), mcp: [], versions: {}, memory: [], scripts: [], subagents: [] };
+  return { root, exists: false, cycles: [], feats: [], pulses: [], docs: [], customTypes: [], sessions: [], inbox: [], stats: null, workflows: [], library: [], instructions: [], background: [], archSettings: defaultSettings(), mcp: [], versions: {}, memory: [], scripts: [], subagents: [] };
+}
+
+// --- Types de documents personnalisés (docs/types.json) ---
+
+const TYPE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+const slugType = (text: string): string =>
+  text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'type';
+
+function docTypesFile(root: string): string {
+  return path.join(root, 'docs', 'types.json');
+}
+
+/** Types de documents ajoutés par le projet. Un id du classement intégré est exclu du fichier. */
+export function readDocTypes(root: string): DocType[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(docTypesFile(root), 'utf8')) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: DocType[] = [];
+    for (const raw of parsed.slice(0, 40)) {
+      const m = rec(raw);
+      if (typeof m.id !== 'string' || !TYPE_ID.test(m.id) || typeof m.label !== 'string' || !m.label.trim()) continue;
+      if (DOC_DIRS[m.id] || out.some((t) => t.id === m.id)) continue;
+      const cmd = typeof m.command === 'string' ? m.command.trim().slice(0, 500) : '';
+      out.push({ id: m.id, label: m.label.trim().slice(0, 60), ...(cmd ? { command: cmd } : {}) });
+    }
+    return out;
+  } catch { return []; }
+}
+
+/** Crée un type de document : dossier docs/<id> généré (vide), commande facultative pour le dépôt de fichiers, liste persistée. */
+export function addDocType(root: string, label: string, command?: string): ProjectData {
+  const clean = String(label ?? '').trim().slice(0, 60);
+  if (!clean) fail("Donne un nom au type.");
+  const id = slugType(clean);
+  if (DOC_DIRS[id]) fail("Ce type existe déjà.");
+  const types = readDocTypes(root);
+  if (types.some((t) => t.id === id)) fail("Ce type existe déjà : docs/" + id + "/.");
+  fs.mkdirSync(path.join(root, "docs", id), { recursive: true });
+  const cmd = typeof command === "string" ? command.trim().slice(0, 500) : "";
+  types.push(cmd ? { id, label: clean, command: cmd } : { id, label: clean });
+  fs.writeFileSync(docTypesFile(root), JSON.stringify(types, null, 2) + "\n");
+  return loadProject(root);
 }
 
 const HEATS = ['hi', 'mid', 'lo', 'script', 'human'];
@@ -228,7 +293,8 @@ export function loadProject(root: string): ProjectData {
       recap: arr(data.recap).map(String), recapNote: str(data.recapNote), decision: str(data.decision),
       primary: str(data.primary), secondary: str(data.secondary), nodes, edges, choices,
       decisionResult: (['approved', 'rejected'].includes(str(data.decisionResult)) ? str(data.decisionResult) : '') as Session['decisionResult'],
-      decidedAt: str(data.decidedAt), claudeSessionId: str(data.claudeSessionId), workflowVersion: str(data.workflowVersion), pending: [], body
+      decidedAt: str(data.decidedAt), claudeSessionId: str(data.claudeSessionId), workflowVersion: str(data.workflowVersion), pending: [], body,
+      model: str(data.model)
     };
   };
 
@@ -302,7 +368,7 @@ export function loadProject(root: string): ProjectData {
   const stats = loadStats(path.join(root, 'stats', 'usage.md'));
 
   return {
-    root, exists: true, cycles, feats, pulses, docs,
+    root, exists: true, cycles, feats, pulses, docs, customTypes: readDocTypes(root),
     sessions: allSessions, inbox, stats, workflows, library, instructions, background, archSettings, mcp, versions, memory: files('memory').map(note), scripts: listScripts(root), subagents: listSubagents(root, workflows)
   };
 }
@@ -320,6 +386,10 @@ const PATCHABLE: { match: (rel: string) => boolean; keys: Record<string, (v: unk
   {
     match: (rel) => /^background\/[^/]+\.md$/.test(rel),
     keys: { active: (v) => typeof v === 'boolean', launch: (v) => typeof v === 'string' && /^[a-z0-9-]{0,40}$/.test(v) }
+  },
+  {
+    match: (rel) => /^sessions\/[^/]+\.md$/.test(rel),
+    keys: { model: (v) => typeof v === 'string' && v.length <= 200 }
   }
 ];
 
@@ -352,6 +422,8 @@ export interface RunSummary {
   bricks?: { kind: string; label: string }[];
   /** Choix du routeur, quand le workflow n'a pas été imposé à la main. */
   route?: { confidence: number; text: string };
+  /** Modèle utilisé pour la session (ex: 'gpt-oss:20b', 'sonnet', etc.). */
+  model?: string;
 }
 
 /** Écrit le récap d'une session lancée depuis l'application dans sessions/. Renvoie le chemin relatif. */
@@ -376,6 +448,7 @@ export function writeSessionFile(root: string, run: RunSummary): string {
     elapsed: minutes >= 1 ? Math.round(minutes) + ' min' : Math.max(1, Math.round(run.durationMs / 1000)) + ' s',
     ask: run.prompt,
     actions: run.actions + (run.actions > 1 ? ' actions' : ' action'),
+    model: run.model ?? '',
     workflow: run.workflow?.name ?? 'Libre',
     confidence: run.route?.confidence ?? 0,
     route: run.route?.text ?? (run.workflow ? 'workflow lancé à la main' : 'lancée à la main, sans routeur'),
@@ -410,6 +483,13 @@ export function readClaudeSessionId(root: string, relPath: string): string {
   return String(matter(fs.readFileSync(full, 'utf8')).data.claudeSessionId ?? '');
 }
 
+/** Lit le modèle d'une session enregistrée. */
+export function readClaudeSessionModel(root: string, relPath: string): string {
+  const full = path.resolve(root, relPath);
+  if (!full.startsWith(path.resolve(root, 'sessions') + path.sep) || !full.endsWith('.md') || !fs.existsSync(full)) return '';
+  return String(matter(fs.readFileSync(full, 'utf8')).data.model ?? '');
+}
+
 /** Ajoute un échange (question de suivi et réponse) à une session enregistrée et met son récap à jour. */
 export function appendFollowUp(root: string, relPath: string, run: RunSummary): string {
   const full = path.resolve(root, relPath);
@@ -422,6 +502,7 @@ export function appendFollowUp(root: string, relPath: string, run: RunSummary): 
   data.recap = lines.slice(1, 7).map((l) => l.slice(0, 200));
   data.actions = run.actions + (run.actions > 1 ? ' actions' : ' action');
   if (run.claudeSessionId) data.claudeSessionId = run.claudeSessionId;
+  if (run.model && !data.model) data.model = run.model;
   const body = parsed.content.trim() + '\n\n## Suivi : ' + run.prompt.trim().slice(0, 200) + '\n\n' + run.answer.trim() + '\n';
   fs.writeFileSync(full, matter.stringify(body, data));
   return relPath;

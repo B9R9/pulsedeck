@@ -114,6 +114,8 @@ export interface Session {
   decidedAt: string;
   /** Identifiant de la conversation côté Claude : permet de la poursuivre. Vide pour les sessions écrites à la main. */
   claudeSessionId: string;
+  /** Modèle utilisé pour cette session (ex. 'gpt-oss:20b', 'sonnet', ou vide pour le défaut). */
+  model: string;
   /** Version du workflow utilisée (v7...), vide pour une session libre. */
   workflowVersion: string;
   /** Accords que la session en cours attend de toi (jamais écrit dans un fichier). */
@@ -332,6 +334,37 @@ export interface ScriptFile {
   updated: string;
 }
 
+/** Un type de document ajouté par le projet : id du dossier dans docs/, nom affiché,
+ * et la commande shell lancée quand on dépose un fichier sur le type (stdout devient le contenu du doc). */
+export interface DocType {
+  id: string;
+  label: string;
+  command?: string;
+}
+
+/** Une ligne de l'arborescence : dossier ou fichier du projet, parents avant enfants. */
+export interface FileEntry {
+  path: string;
+  dir: boolean;
+  depth: number;
+  size: number;
+}
+
+export interface ProjectFile {
+  path: string;
+  content: string;
+  size: number;
+  updated: string;
+}
+
+export interface FileEditRequest {
+  path: string;
+  content: string;
+  instruction: string;
+  /** Partie sélectionnée : on propose son remplacement seul, le reste du fichier est du contexte. */
+  selection?: { start: number; end: number; text: string };
+}
+
 export interface ProjectData {
   root: string;
   exists: boolean;
@@ -339,6 +372,8 @@ export interface ProjectData {
   feats: Feat[];
   pulses: Pulse[];
   docs: DocFile[];
+  /** Types de documents ajoutés par le projet (docs/types.json). */
+  customTypes: DocType[];
   sessions: Session[];
   inbox: InboxItem[];
   stats: StatsData | null;
@@ -433,7 +468,23 @@ export interface SuggestRequest {
   current: string;
   /** Précision facultative de l'utilisateur. */
   instruction: string;
+  /** Texte du format attendu, choisi par l'application dans les formats de sortie des options. */
+  format?: string;
 }
+
+/** Type d'écrit auquel s'applique un format de sortie : note de session, document ou réponse. */
+export type FormatKind = 'recap' | 'document' | 'reponse';
+
+/** Un format de sortie défini dans Options : nom affiché et consigne de structure envoyée à Claude. */
+export interface OutputFormat {
+  id: string;
+  label: string;
+  kind: FormatKind;
+  text: string;
+}
+
+/** Id du format appliqué par défaut pour chaque type d'écrit. */
+export type FormatsDefaut = Partial<Record<FormatKind, string>>;
 
 /** Un modèle local Ollama : identifiant exact, nom affiché dans l'interface, utilisé ou ignoré. */
 export interface LocalModel {
@@ -458,6 +509,10 @@ export interface AppSettings {
   modelDocs: string;
   /** Modèles locaux Ollama que l'interface propose, avec leur nom affiché et leur état. */
   localModels: LocalModel[];
+  /** Formats de sortie définis dans Options (récaps, documents, réponses). */
+  formats: OutputFormat[];
+  /** Format appliqué par défaut pour chaque type d'écrit. */
+  formatsDefaut: FormatsDefaut;
   dataDir: string;
   version: string;
 }
@@ -470,6 +525,8 @@ export interface WorkspaceApi {
   runBackgroundTask(id: string): Promise<ProjectData>;
   approveBackgroundTask(id: string): Promise<ProjectData>;
   onProjectChanged(listener: () => void): () => void;
+  /** Données du projet repoussées quand `docs/` change sur le disque (modifications externes). */
+  onDocsChanged(listener: (data: ProjectData) => void): () => void;
   restoreWorkflowVersion(workflow: string, version: string): Promise<ProjectData>;
   snapshotWorkflow(workflow: string): Promise<ProjectData>;
   saveScript(name: string, content: string, create: boolean): Promise<ProjectData>;
@@ -477,7 +534,13 @@ export interface WorkspaceApi {
   loadSettings(): Promise<AppSettings>;
   /** Modèles locaux utilisables relevés auprès d'Ollama, avec leur nom affiché. */
   listOllamaModels(): Promise<LocalModel[]>;
-  setSettings(patch: { model?: string; modelProjets?: string; modelDocs?: string; ticketsFile?: ''; localModels?: LocalModel[] }): Promise<AppSettings>;
+  /** Crée un type de document : dossier docs/<id> et entrée dans docs/types.json. */
+  addDocType(label: string, command?: string): Promise<ProjectData>;
+  /** Dépose un fichier sur un type : lance la commande du type et crée le document avec sa sortie. */
+  dropDocFile(typeId: string, filePath: string): Promise<ProjectData>;
+  /** Chemin local d'un fichier glissé depuis l'explorateur système. */
+  pathForFile(file: File): string;
+  setSettings(patch: { model?: string; modelProjets?: string; modelDocs?: string; ticketsFile?: string; localModels?: LocalModel[]; formats?: OutputFormat[]; formatsDefaut?: FormatsDefaut }): Promise<AppSettings>;
   /** Change le projet de travail vers un dossier déjà connu (sans boîte de dialogue). */
   setWorkspace(root: string): Promise<ProjectData | null>;
   loadTickets(): Promise<TicketsData>;
@@ -495,14 +558,20 @@ export interface WorkspaceApi {
   chooseWorkspace(): Promise<ProjectData | null>;
   resolveInboxItem(path: string, result?: '' | 'approved' | 'rejected'): Promise<ProjectData>;
   importDriveDoc(url: string): Promise<ProjectData>;
-  saveEntity(kind: string, path: string | null, fields: Record<string, unknown>, body?: string): Promise<ProjectData>;
+  saveEntity(kind: string, path: string | null, fields: Record<string, unknown>, body?: string, emptyStart?: boolean): Promise<ProjectData>;
   deleteEntity(kind: string, path: string): Promise<ProjectData>;
   workflowOp(workflow: string, op: WorkflowOp): Promise<ProjectData>;
   decideSession(path: string, result: '' | 'approved' | 'rejected', picks?: Record<string, boolean>): Promise<ProjectData>;
   saveInstruction(path: string, text: string): Promise<ProjectData>;
   patchFile(path: string, patch: Record<string, unknown>): Promise<ProjectData>;
+  /** Arborescence du projet (parents avant enfants), sans node_modules ni dist ; dossiers cachés inclus. */
+  listFileTree(): Promise<FileEntry[]>;
+  readProjectFile(relPath: string): Promise<ProjectFile>;
+  writeProjectFile(relPath: string, content: string): Promise<void>;
+  /** Demande à Claude une nouvelle version d'un fichier ou d'une sélection. N'écrit rien. */
+  suggestFileEdit(req: FileEditRequest): Promise<string>;
   routePrompt(prompt: string): Promise<RouteResult>;
-  startRun(prompt: string, followUp?: string, workflow?: string, route?: { confidence: number; text: string }): Promise<string>;
+  startRun(prompt: string, followUp?: string, workflow?: string, route?: { confidence: number; text: string }, model?: string): Promise<string>;
   answerAsk(runId: string, askId: string, allow: boolean): Promise<void>;
   stopRun(runId: string): Promise<void>;
   onRunEvent(listener: (event: RunEvent) => void): () => void;

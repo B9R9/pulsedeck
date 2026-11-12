@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { Session } from '../shared/types';
+import { useSettings } from '../composables/useSettings';
 import MdText from './MdText.vue';
 
 const props = defineProps<{ session: Session; focused: boolean }>();
@@ -11,6 +12,19 @@ const emit = defineEmits<{
   (e: 'ask', text: string): void;
   (e: 'answer', askId: string, allow: boolean): void;
 }>();
+
+const { getModelLabel, activeModel, activeModelLabel, availableModels } = useSettings();
+const modelLabel = computed(() => getModelLabel(props.session.model || activeModel.value));
+
+async function changeSessionModel(e: Event) {
+  const next = (e.target as HTMLSelectElement).value;
+  if (!saved.value) return;
+  try {
+    await window.api.patchFile(props.session.path, { model: next });
+  } catch {
+    /* ignore */
+  }
+}
 
 const LABEL = { run: 'Travaille', wait: 'Attend ta validation', done: 'Terminé', plan: 'Plan à valider' };
 
@@ -73,16 +87,31 @@ watch(() => [props.session.id, props.session.body, props.session.recapTitle, pro
     </div>
 
     <div ref="scroller" class="body" tabindex="0" aria-label="Conversation" role="log">
-      <div class="route"><span class="chipb wf">{{ session.workflow }}</span><span>{{ session.route }}</span></div>
+      <div class="route">
+        <span class="chipb wf">{{ session.workflow }}</span>
+        <select
+          v-if="saved"
+          :value="session.model || ''"
+          class="chipb model selectmodel"
+          :aria-label="'Modèle pour ' + session.name"
+          title="Changer le modèle de cette session"
+          @change="changeSessionModel"
+        >
+          <option value="">Par défaut ({{ activeModelLabel }})</option>
+          <option v-for="m in availableModels.filter((x) => x.value)" :key="m.value" :value="m.value">{{ m.label }}</option>
+        </select>
+        <span v-else class="chipb model">{{ modelLabel }}</span>
+        <span>{{ session.route }}</span>
+      </div>
 
       <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
-        <span class="who">{{ m.role === 'user' ? 'Toi' : 'Claude' }}</span>
+        <span class="who">{{ m.role === 'user' ? 'Toi' : modelLabel }}</span>
         <div class="bubble"><MdText :text="m.text" /></div>
       </div>
 
       <div v-if="live && session.status === 'run'" class="msg ai">
-        <span class="who">Claude</span>
-        <div class="bubble typing"><span class="dots" aria-label="Claude travaille"><i /><i /><i /></span><span class="acts">{{ session.actions }}</span></div>
+        <span class="who">{{ modelLabel }}</span>
+        <div class="bubble typing"><span class="dots" :aria-label="modelLabel + ' travaille'"><i /><i /><i /></span><span class="acts">{{ session.actions }}</span></div>
       </div>
       <div v-if="live && session.recap.length" class="tools mono">
         <span v-for="(r, i) in session.recap" :key="i">{{ r }}</span>
@@ -90,7 +119,7 @@ watch(() => [props.session.id, props.session.body, props.session.recapTitle, pro
       <div v-else-if="!live" class="actions">{{ session.actions }}, repliées · <span class="mono">{{ session.recapNote }}</span></div>
 
       <div v-for="a in session.pending" :key="a.id" class="ask-card" role="alert">
-        <span class="ask-title">{{ a.kind === 'human' ? a.title : 'Claude veut utiliser : ' + a.title }}</span>
+        <span class="ask-title">{{ a.kind === 'human' ? a.title : modelLabel + ' veut utiliser : ' + a.title }}</span>
         <pre v-if="a.detail" class="ask-detail mono">{{ a.detail }}</pre>
         <div class="row">
           <button class="btn ok big" @click="$emit('answer', a.id, true)">{{ a.kind === 'human' ? 'Valider' : 'Autoriser' }}</button>
@@ -115,7 +144,7 @@ watch(() => [props.session.id, props.session.body, props.session.recapTitle, pro
       <form class="composer" @submit.prevent="ask">
         <textarea
           v-model="msg" rows="1" :aria-label="`Message pour ${session.name}`" :disabled="!canAsk"
-          :placeholder="live ? 'Claude travaille…' : canAsk ? 'Écris à Claude' : 'Session close, ouvre-en une avec +'"
+          :placeholder="live ? modelLabel + ' travaille…' : canAsk ? 'Écris à ' + modelLabel : 'Session close, ouvre-en une avec +'"
           @keydown.enter.exact.prevent="ask"
         />
         <button class="send" type="submit" aria-label="Envoyer" title="Envoyer (Entrée)" :disabled="!canAsk || !msg.trim()">
@@ -142,6 +171,17 @@ watch(() => [props.session.id, props.session.body, props.session.recapTitle, pro
 .body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 .route { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--muted-2); }
 .wf { height: 28px; color: var(--blue); border-color: #2f4a73; }
+.model {
+  height: 28px; color: var(--clay); border-color: #5a3a2c;
+  &.selectmodel {
+    background: var(--panel);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 0 8px;
+    outline: none;
+  }
+}
 .msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%;
   .who { font-size: 11px; color: var(--muted); padding: 0 4px; }
   .bubble { border-radius: 14px; padding: 10px 14px; border: 1px solid var(--line); }

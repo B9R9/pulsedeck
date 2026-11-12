@@ -1,7 +1,9 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 
 contextBridge.exposeInMainWorld('api', {
+  /** Chemin local d'un fichier glissé depuis le Finder / l'explorateur (File.path n'existe plus côté renderer). */
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   setSettings: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
   listOllamaModels: () => ipcRenderer.invoke('models:ollama'),
@@ -18,6 +20,8 @@ contextBridge.exposeInMainWorld('api', {
   createTicket: (fields: unknown) => ipcRenderer.invoke('tickets:create', fields),
   deleteTicket: (key: string) => ipcRenderer.invoke('tickets:delete', key),
   proposeDocUpdate: (docPath: string, instruction: string) => ipcRenderer.invoke('doc:aiUpdate', docPath, instruction),
+  addDocType: (label: string, command?: string) => ipcRenderer.invoke('docs:addType', label, command),
+  dropDocFile: (typeId: string, filePath: string) => ipcRenderer.invoke('docs:dropFile', typeId, filePath),
   saveScript: (name: string, content: string, create: boolean) => ipcRenderer.invoke('scripts:save', name, content, create),
   deleteScript: (name: string) => ipcRenderer.invoke('scripts:delete', name),
   restoreWorkflowVersion: (workflow: string, version: string) => ipcRenderer.invoke('workflow:restore', workflow, version),
@@ -32,6 +36,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('project:changed', handler);
     return () => ipcRenderer.removeListener('project:changed', handler);
   },
+  onDocsChanged: (listener: (data: unknown) => void) => {
+    const handler = (_e: IpcRendererEvent, data: unknown) => listener(data);
+    ipcRenderer.on('docs:changed', handler);
+    return () => ipcRenderer.removeListener('docs:changed', handler);
+  },
   suggestText: (req: unknown) => ipcRenderer.invoke('ai:suggest', req),
   splitFeat: (featId: string) => ipcRenderer.invoke('feat:split', featId),
   applySplit: (featId: string, proposal: unknown) => ipcRenderer.invoke('feat:applySplit', featId, proposal),
@@ -40,14 +49,18 @@ contextBridge.exposeInMainWorld('api', {
   setWorkspace: (root: string) => ipcRenderer.invoke('project:set', root),
   resolveInboxItem: (relPath: string, result?: string) => ipcRenderer.invoke('inbox:resolve', relPath, result),
   importDriveDoc: (url: string) => ipcRenderer.invoke('inbox:import', url),
-  saveEntity: (kind: string, relPath: string | null, fields: Record<string, unknown>, body?: string) => ipcRenderer.invoke('entity:save', kind, relPath, fields, body),
+  saveEntity: (kind: string, relPath: string | null, fields: Record<string, unknown>, body?: string, emptyStart?: boolean) => ipcRenderer.invoke('entity:save', kind, relPath, fields, body, emptyStart === true),
   deleteEntity: (kind: string, relPath: string) => ipcRenderer.invoke('entity:delete', kind, relPath),
   workflowOp: (wfId: string, op: unknown) => ipcRenderer.invoke('workflow:op', wfId, op),
   decideSession: (relPath: string, result: string, picks?: Record<string, boolean>) => ipcRenderer.invoke('session:decide', relPath, result, picks),
   saveInstruction: (relPath: string, text: string) => ipcRenderer.invoke('instruction:save', relPath, text),
   patchFile: (relPath: string, patch: Record<string, unknown>) => ipcRenderer.invoke('file:patch', relPath, patch),
+  listFileTree: () => ipcRenderer.invoke('file:tree'),
+  readProjectFile: (relPath: string) => ipcRenderer.invoke('file:read', relPath),
+  writeProjectFile: (relPath: string, content: string) => ipcRenderer.invoke('file:write', relPath, content),
+  suggestFileEdit: (req: unknown) => ipcRenderer.invoke('file:aiEdit', req),
   routePrompt: (prompt: string) => ipcRenderer.invoke('route:prompt', prompt),
-  startRun: (prompt: string, followUp?: string, workflow?: string, route?: unknown) => ipcRenderer.invoke('run:start', prompt, followUp, workflow, route),
+  startRun: (prompt: string, followUp?: string, workflow?: string, route?: unknown, model?: string) => ipcRenderer.invoke('run:start', prompt, followUp, workflow, route, model),
   answerAsk: (runId: string, askId: string, allow: boolean) => ipcRenderer.invoke('run:answer', runId, askId, allow),
   stopRun: (runId: string) => ipcRenderer.invoke('run:stop', runId),
   onRunEvent: (listener: (event: unknown) => void) => {
